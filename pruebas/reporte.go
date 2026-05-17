@@ -1,14 +1,16 @@
 package main
 
 // reporte.go
-// Lectura de métricas del sistema operativo (CPU, RAM, Red) y goroutine
-// que actualiza los labels de la GUI cada 5 segundos.
-// La lógica de lectura no depende de GUI; solo los parámetros de reporte() sí.
+// Lectura de métricas del sistema (CPU, RAM, Red) multiplataforma.
+// En Linux lee /proc/*; en Windows usa PowerShell/CimInstance.
+// El goroutine reporte() actualiza los labels de la GUI cada 5 segundos.
 
 import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -28,18 +30,17 @@ type MetricasSistema struct {
 	NetTxBytes    uint64
 }
 
-// ── Estado interno de CPU (delta entre lecturas) ──────────────────────────────
-
+// estado interno de CPU — solo se usa en Linux para el cálculo delta
 var (
 	prevIdle  uint64
 	prevTotal uint64
 )
 
-// ── Lecturas de /proc ─────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  LECTURAS LINUX  (/proc)
+// ══════════════════════════════════════════════════════════════════════════════
 
-// leerCPU calcula el porcentaje de uso de CPU desde la última llamada
-// comparando los contadores acumulados de /proc/stat.
-func leerCPU() float64 {
+func leerCPULinux() float64 {
 	f, err := os.Open("/proc/stat")
 	if err != nil {
 		return 0
@@ -73,9 +74,8 @@ func leerCPU() float64 {
 
 		deltaIdle  := idleNow - prevIdle
 		deltaTotal := totalNow - prevTotal
-
-		prevIdle  = idleNow
-		prevTotal = totalNow
+		prevIdle   = idleNow
+		prevTotal  = totalNow
 
 		if deltaTotal == 0 {
 			return 0
@@ -85,8 +85,7 @@ func leerCPU() float64 {
 	return 0
 }
 
-// leerRAM obtiene la memoria usada, total (en MB) y el porcentaje desde /proc/meminfo.
-func leerRAM() (usadaMB, totalMB, porcentaje float64) {
+func leerRAMLinux() (usadaMB, totalMB, porcentaje float64) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return
@@ -106,13 +105,13 @@ func leerRAM() (usadaMB, totalMB, porcentaje float64) {
 	}
 
 	total        := vals["MemTotal"]
-	libre         := vals["MemFree"]
+	libre        := vals["MemFree"]
 	buffers      := vals["Buffers"]
-	cached        := vals["Cached"]
+	cached       := vals["Cached"]
 	sreclaimable := vals["SReclaimable"]
 
 	disponible := libre + buffers + cached + sreclaimable
-	usada       := total - disponible
+	usada      := total - disponible
 
 	totalMB = float64(total) / 1024.0
 	usadaMB = float64(usada) / 1024.0
@@ -122,9 +121,7 @@ func leerRAM() (usadaMB, totalMB, porcentaje float64) {
 	return
 }
 
-// leerRed suma los bytes recibidos y transmitidos de todas las interfaces
-// de red (excepto loopback) desde /proc/net/dev.
-func leerRed() (rxBytes, txBytes uint64) {
+func leerRedLinux() (rxBytes, txBytes uint64) {
 	f, err := os.Open("/proc/net/dev")
 	if err != nil {
 		return
@@ -156,13 +153,81 @@ func leerRed() (rxBytes, txBytes uint64) {
 	return
 }
 
-// ── Combinación ───────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  LECTURAS WINDOWS  (PowerShell + CimInstance)
+// ══════════════════════════════════════════════════════════════════════════════
 
-// obtenerMetricas ejecuta las tres lecturas y las empaqueta en MetricasSistema.
+// psRun ejecuta un fragmento de PowerShell y devuelve la salida limpia.
+func psRun(script string) string {
+	out, err := exec.Command(
+		"powershell", "-NoProfile", "-NonInteractive", "-Command", script,
+	).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func leerCPUWindows() float64 {
+	raw := psRun("(Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average")
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func leerRAMWindows() (usadaMB, totalMB, porcentaje float64) {
+	// TotalVisibleMemorySize y FreePhysicalMemory están en KB
+	raw := psRun(`$cs = Get-CimInstance Win32_OperatingSystem; "$($cs.TotalVisibleMemorySize) $($cs.FreePhysicalMemory)"`)
+	partes := strings.Fields(raw)
+	if len(partes) < 2 {
+		return
+	}
+	total, _ := strconv.ParseFloat(partes[0], 64)
+	libre, _  := strconv.ParseFloat(partes[1], 64)
+	usada     := total - libre
+
+	totalMB = total / 1024.0
+	usadaMB = usada / 1024.0
+	if total > 0 {
+		porcentaje = usada / total * 100.0
+	}
+	return
+}
+
+func leerRedWindows() (rxBytes, txBytes uint64) {
+	raw := psRun(`$a = Get-CimInstance Win32_PerfRawData_Tcpip_NetworkInterface; $rx = ($a | Measure-Object -Property BytesReceivedPersec -Sum).Sum; $tx = ($a | Measure-Object -Property BytesSentPersec -Sum).Sum; "$rx $tx"`)
+	partes := strings.Fields(raw)
+	if len(partes) < 2 {
+		return
+	}
+	rxBytes, _ = strconv.ParseUint(partes[0], 10, 64)
+	txBytes, _ = strconv.ParseUint(partes[1], 10, 64)
+	return
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FACHADA — detecta el OS y delega a la implementación correcta
+// ══════════════════════════════════════════════════════════════════════════════
+
 func obtenerMetricas() MetricasSistema {
-	cpu := leerCPU()
-	usada, total, ramPct := leerRAM()
-	rx, tx := leerRed()
+	var (
+		cpu                  float64
+		usada, total, ramPct float64
+		rx, tx               uint64
+	)
+
+	if runtime.GOOS == "windows" {
+		cpu               = leerCPUWindows()
+		usada, total, ramPct = leerRAMWindows()
+		rx, tx            = leerRedWindows()
+	} else {
+		cpu               = leerCPULinux()
+		usada, total, ramPct = leerRAMLinux()
+		rx, tx            = leerRedLinux()
+	}
+
 	return MetricasSistema{
 		CPUPorcentaje: cpu,
 		RAMUsadaMB:    usada,
@@ -173,11 +238,10 @@ func obtenerMetricas() MetricasSistema {
 	}
 }
 
-// ── Helpers de formato ────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  HELPERS DE FORMATO
+// ══════════════════════════════════════════════════════════════════════════════
 
-// barraTexto devuelve una barra ASCII proporcional al porcentaje dado.
-//
-//	Ejemplo: barraTexto(65, 20) → "[█████████████░░░░░░░]"
 func barraTexto(pct float64, ancho int) string {
 	llenos := int(pct / 100.0 * float64(ancho))
 	if llenos > ancho {
@@ -186,7 +250,6 @@ func barraTexto(pct float64, ancho int) string {
 	return "[" + strings.Repeat("█", llenos) + strings.Repeat("░", ancho-llenos) + "]"
 }
 
-// formatBytes convierte bytes crudos a una cadena legible (B, KB, MB, GB).
 func formatBytes(b uint64) string {
 	switch {
 	case b >= 1<<30:
@@ -200,17 +263,14 @@ func formatBytes(b uint64) string {
 	}
 }
 
-// ── Goroutine de reporte ──────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//  GOROUTINE DEL REPORTE
+// ══════════════════════════════════════════════════════════════════════════════
 
-// reporte lanza un goroutine que actualiza los tres canvas.Text con las métricas
-// del sistema cada 5 segundos. Se detiene cuando se cierra el canal stop.
-//
-// Parámetros:
-//   - lblCPU, lblRAM, lblRed: labels de la ventana principal a actualizar.
-//   - stop: canal que se cierra cuando el usuario cierra la ventana.
+// reporte lanza un goroutine que actualiza los tres canvas.Text cada 5 segundos.
+// Se detiene limpiamente cuando se cierra el canal stop.
 func reporte(lblCPU, lblRAM, lblRed *canvas.Text, stop <-chan struct{}) {
-	// Primera lectura para inicializar prevIdle/prevTotal (el primer delta sería 0).
-	obtenerMetricas()
+	obtenerMetricas() // inicializa contadores delta de CPU en Linux
 
 	ticker := time.NewTicker(5 * time.Second)
 	go func() {

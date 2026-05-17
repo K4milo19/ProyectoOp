@@ -78,9 +78,11 @@ func mostrarVentanaPrincipal(a fyne.App) {
 		scroll.ScrollToBottom()
 	}
 
+	// sistemaOperativo() está definido en shell.go y detecta el OS actual
+	soLinea := fmt.Sprintf("  ║      %-38s║", sistemaOperativo()+" — shell interactiva")
 	agregar("  ╔═══════════════════════════════════════════════╗")
 	agregar("  ║           S H E L L O S   v1.0               ║")
-	agregar("  ║      Ubuntu Linux — shell interactiva         ║")
+	agregar(soLinea)
 	agregar("  ║   'bye' / 'exit'  para cerrar la sesión       ║")
 	agregar("  ╚═══════════════════════════════════════════════╝")
 	agregar("")
