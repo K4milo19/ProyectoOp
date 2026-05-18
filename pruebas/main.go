@@ -10,6 +10,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -288,13 +289,33 @@ func mostrarVentanaServidor(a fyne.App) {
 		container.NewPadded(titBar),
 	)
 
-	// ── Info fija ─────────────────────────────────────────────────────────
+	// ── IPs locales (obtenidas de red_servidor.go) ───────────────────────
+	ips := obtenerIPs() // puede devolver varias interfaces
+
+	// Línea resumen para la barra de info
+	ipResumen := strings.Join(ips, "  |  ")
+
 	infoLbl := canvas.NewText(
-		fmt.Sprintf("  Puerto: %s    Log: %s    OS: %s", puertoServidor, archivoLog, sistemaOperativo()),
+		fmt.Sprintf("  OS: %s    Puerto: %s    Log: %s", sistemaOperativo(), puertoServidor, archivoLog),
 		colMuted,
 	)
 	infoLbl.TextStyle = fyne.TextStyle{Monospace: true}
 	infoLbl.TextSize = 11
+
+	// Label destacado con las IPs para que el operador las comparta fácilmente
+	ipTitulo := canvas.NewText("  IP(s) para conectar clientes:", colAccent)
+	ipTitulo.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	ipTitulo.TextSize = 12
+
+	ipValor := canvas.NewText("  "+ipResumen, colPrimary)
+	ipValor.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	ipValor.TextSize = 14
+
+	panelIP := container.NewVBox(
+		container.NewPadded(infoLbl),
+		container.NewPadded(ipTitulo),
+		container.NewPadded(ipValor),
+	)
 
 	// ── Log en vivo ───────────────────────────────────────────────────────
 	logLabel := widget.NewLabel("")
@@ -303,7 +324,7 @@ func mostrarVentanaServidor(a fyne.App) {
 	scroll := container.NewVScroll(logLabel)
 
 	var lineas []string
-	// onLog es llamado desde goroutines; usamos canal para serializar al hilo GUI
+	// onLog es llamado desde goroutines; canal para serializar al hilo GUI
 	logCh := make(chan string, 64)
 	go func() {
 		for msg := range logCh {
@@ -317,9 +338,13 @@ func mostrarVentanaServidor(a fyne.App) {
 	onLog("═══════════════════════════════════════════════════════════")
 	onLog("  ShellOS  —  Servidor TCP iniciando")
 	onLog("═══════════════════════════════════════════════════════════")
+	for _, ip := range ips {
+		onLog(fmt.Sprintf("  ◈  IP disponible:  %s%s", ip, puertoServidor))
+	}
+	onLog("═══════════════════════════════════════════════════════════")
 
 	// ── Iniciar servidor ──────────────────────────────────────────────────
-	err := iniciarServidor(onLog, stop) // definido en red_servidor.go
+	err := iniciarServidor(onLog, stop)
 	if err != nil {
 		estadoLbl.Text = "● ERROR"
 		estadoLbl.Color = colError
@@ -332,7 +357,7 @@ func mostrarVentanaServidor(a fyne.App) {
 	}
 
 	// ── Layout ────────────────────────────────────────────────────────────
-	top := container.NewVBox(barTitulo, hRule(), container.NewPadded(infoLbl), hRule())
+	top := container.NewVBox(barTitulo, hRule(), panelIP, hRule())
 
 	w.SetContent(container.NewBorder(
 		top, nil, nil, nil,

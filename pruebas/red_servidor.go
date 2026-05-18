@@ -94,6 +94,46 @@ func manejarCliente(conn net.Conn, onLog func(string)) {
 
 // ── Servidor ──────────────────────────────────────────────────────────────────
 
+// obtenerIPs devuelve todas las IPs locales de la máquina (excluye loopback).
+// Se usa para mostrar al operador del servidor a qué IP deben conectarse los clientes.
+func obtenerIPs() []string {
+	var ips []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return []string{"(error obteniendo IPs)"}
+	}
+	for _, iface := range ifaces {
+		// Ignorar interfaces caídas y loopback
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			// Incluir solo IPv4 para simplificar
+			if ip.To4() != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+	if len(ips) == 0 {
+		return []string{"127.0.0.1 (solo loopback)"}
+	}
+	return ips
+}
+
 // iniciarServidor abre el socket TCP y acepta clientes indefinidamente.
 // onLog es un callback que se llama con cada evento para mostrarlo en la GUI.
 // stop es un canal que, al cerrarse, detiene el listener.
