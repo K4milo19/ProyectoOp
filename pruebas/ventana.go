@@ -1,8 +1,9 @@
 package main
 
 // ventana.go
-// Ventana principal del terminal: historial scrollable, barra de comandos
-// y panel de métricas en tiempo real. Se muestra tras un login exitoso.
+// Ventana principal del terminal LOCAL (modo shell directa).
+// Solo se usa cuando el nodo opera de forma independiente (no servidor/cliente).
+// Los comandos se ejecutan localmente con ejecutarComando() de shell.go.
 
 import (
 	"fmt"
@@ -15,24 +16,23 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// mostrarVentanaPrincipal construye y muestra la ventana del terminal.
-// Recibe la instancia de la app para poder llamar a a.Quit() si el usuario
-// escribe "bye" o "exit".
+// mostrarVentanaPrincipal construye y muestra la ventana del terminal local.
+// Se llama tras un login exitoso en modo standalone (sin red).
 func mostrarVentanaPrincipal(a fyne.App) {
-	w := a.NewWindow("ShellOS")
+	w := a.NewWindow("ShellOS  —  terminal local")
 	w.Resize(fyne.NewSize(980, 680))
 	w.CenterOnScreen()
 
-	// ── Canal de parada: se cierra cuando el usuario cierra la ventana ────
+	// ── Canal de parada del monitor de métricas ───────────────────────────
 	stopReporte := make(chan struct{})
 	w.SetOnClosed(func() { close(stopReporte) })
 
 	// ── Barra de título ───────────────────────────────────────────────────
-	titBar := canvas.NewText("▸ ShellOS  —  terminal interactiva", colAccent)
+	titBar := canvas.NewText("▸ ShellOS  —  terminal local", colAccent)
 	titBar.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	titBar.TextSize = 13
 
-	// ── Panel de métricas ─────────────────────────────────────────────────
+	// ── Panel de métricas (reporte.go) ────────────────────────────────────
 	tituloMetricas := canvas.NewText("◈  MONITOR DEL SISTEMA", colAccent)
 	tituloMetricas.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	tituloMetricas.TextSize = 11
@@ -49,26 +49,24 @@ func mostrarVentanaPrincipal(a fyne.App) {
 	lblRed.TextStyle = fyne.TextStyle{Monospace: true}
 	lblRed.TextSize = 12
 
-	lblActualizado := canvas.NewText("actualización cada 5 s", colMuted)
-	lblActualizado.TextStyle = fyne.TextStyle{Monospace: true}
-	lblActualizado.TextSize = 10
+	lblTick := canvas.NewText("actualización cada 5 s", colMuted)
+	lblTick.TextStyle = fyne.TextStyle{Monospace: true}
+	lblTick.TextSize = 10
 
 	panelMetricas := container.NewVBox(
 		container.NewPadded(tituloMetricas),
 		container.NewPadded(lblCPU),
 		container.NewPadded(lblRAM),
 		container.NewPadded(lblRed),
-		container.NewPadded(lblActualizado),
+		container.NewPadded(lblTick),
 	)
 
-	// Iniciar goroutine de métricas (definido en reporte.go)
 	reporte(lblCPU, lblRAM, lblRed, stopReporte)
 
-	// ── Historial del terminal ────────────────────────────────────────────
+	// ── Historial ─────────────────────────────────────────────────────────
 	historial := widget.NewLabel("")
 	historial.TextStyle = fyne.TextStyle{Monospace: true}
 	historial.Wrapping = fyne.TextWrapWord
-
 	scroll := container.NewVScroll(historial)
 
 	var lineas []string
@@ -78,8 +76,7 @@ func mostrarVentanaPrincipal(a fyne.App) {
 		scroll.ScrollToBottom()
 	}
 
-	// sistemaOperativo() está definido en shell.go y detecta el OS actual
-	soLinea := fmt.Sprintf("  ║      %-38s║", sistemaOperativo()+" — shell interactiva")
+	soLinea := fmt.Sprintf("  ║      %-38s║", sistemaOperativo()+" — shell local")
 	agregar("  ╔═══════════════════════════════════════════════╗")
 	agregar("  ║           S H E L L O S   v1.0               ║")
 	agregar(soLinea)
@@ -87,11 +84,11 @@ func mostrarVentanaPrincipal(a fyne.App) {
 	agregar("  ╚═══════════════════════════════════════════════╝")
 	agregar("")
 
-	// ── Barra de entrada de comandos ──────────────────────────────────────
-	promptLabel := labelMuted("")
+	// ── Entrada de comandos ───────────────────────────────────────────────
+	promptLbl := labelMuted("")
 	actualizarPrompt := func() {
 		pwd, _ := os.Getwd()
-		promptLabel.SetText(pwd + "  »")
+		promptLbl.SetText(pwd + "  »")
 	}
 	actualizarPrompt()
 
@@ -108,7 +105,6 @@ func mostrarVentanaPrincipal(a fyne.App) {
 		pwd, _ := os.Getwd()
 		agregar(fmt.Sprintf("  %s  » %s", pwd, texto))
 
-		// ejecutarComando está definido en shell.go
 		salida, quit := ejecutarComando(texto)
 		if salida != "" {
 			for _, l := range strings.Split(salida, "\n") {
@@ -127,24 +123,19 @@ func mostrarVentanaPrincipal(a fyne.App) {
 	btnEjec := widget.NewButton("↵ Ejecutar", func() { procesar() })
 	btnEjec.Importance = widget.HighImportance
 
-	barCmd := container.NewBorder(nil, nil, promptLabel, btnEjec, entrada)
+	barCmd := container.NewBorder(nil, nil, promptLbl, btnEjec, entrada)
 
-	// ── Layout final ──────────────────────────────────────────────────────
+	// ── Layout ────────────────────────────────────────────────────────────
 	top := container.NewVBox(
 		container.NewPadded(titBar),
 		hRule(),
 		panelMetricas,
 		hRule(),
 	)
-	bottom := container.NewVBox(
-		hRule(),
-		container.NewPadded(barCmd),
-	)
+	bottom := container.NewVBox(hRule(), container.NewPadded(barCmd))
 
 	w.SetContent(container.NewBorder(
-		top,
-		bottom,
-		nil, nil,
+		top, bottom, nil, nil,
 		container.NewPadded(scroll),
 	))
 	w.Canvas().Focus(entrada)

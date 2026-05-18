@@ -2,8 +2,11 @@ package main
 
 // main.go
 // Punto de entrada de ShellOS.
-// Responsabilidades: crear la app, aplicar el tema, construir la UI de login
-// y delegar en los otros archivos según el flujo de autenticación.
+// Flujo: selección de modo (Servidor / Cliente) → login → ventana principal.
+//
+// Servidor: abre un socket TCP en :9000, muestra log en vivo de conexiones
+//           y comandos ejecutados, y registra todo en logs.txt.
+// Cliente:  pide la IP del servidor, se conecta y abre una terminal remota.
 
 import (
 	"fmt"
@@ -15,11 +18,126 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-func main() {
-	intentos := 0
+// modoApp indica si el usuario eligió operar como servidor o cliente.
+type modoApp int
 
-	a := app.New()
-	a.Settings().SetTheme(&shellTheme{}) // definido en theme.go
+const (
+	modoServidor modoApp = iota
+	modoCliente
+)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  VENTANA DE SELECCIÓN DE MODO
+// ══════════════════════════════════════════════════════════════════════════════
+
+// mostrarSeleccionModo muestra la primera ventana donde el usuario elige
+// si este nodo actuará como Servidor o como Cliente.
+// Al elegir llama a mostrarLogin con el modo seleccionado.
+func mostrarSeleccionModo(a fyne.App) {
+	w := a.NewWindow("ShellOS — Selección de modo")
+	w.Resize(fyne.NewSize(480, 420))
+	w.CenterOnScreen()
+
+	// ── Cabecera ──────────────────────────────────────────────────────────
+	logo := canvas.NewText("S H E L L O S", colPrimary)
+	logo.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	logo.TextSize = 28
+	logo.Alignment = fyne.TextAlignCenter
+
+	sub := canvas.NewText("selecciona el modo de operación", colMuted)
+	sub.TextStyle = fyne.TextStyle{Monospace: true}
+	sub.TextSize = 11
+	sub.Alignment = fyne.TextAlignCenter
+
+	deco := canvas.NewRectangle(colAccent)
+	deco.SetMinSize(fyne.NewSize(48, 2))
+
+	// ── Tarjeta SERVIDOR ──────────────────────────────────────────────────
+	icnSrv := canvas.NewText("▣", colAccent)
+	icnSrv.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	icnSrv.TextSize = 28
+
+	tituloSrv := canvas.NewText("SERVIDOR", colPrimary)
+	tituloSrv.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	tituloSrv.TextSize = 15
+
+	descSrv := canvas.NewText("Acepta conexiones remotas.\nEjecuta comandos y guarda logs.txt.", colMuted)
+	descSrv.TextStyle = fyne.TextStyle{Monospace: true}
+	descSrv.TextSize = 11
+
+	btnSrv := widget.NewButton("[ INICIAR COMO SERVIDOR ]", func() {
+		w.Hide()
+		mostrarLogin(a, modoServidor)
+	})
+	btnSrv.Importance = widget.HighImportance
+
+	cardSrv := container.NewVBox(
+		container.NewCenter(icnSrv),
+		container.NewCenter(tituloSrv),
+		container.NewCenter(descSrv),
+		spacer(),
+		container.NewCenter(btnSrv),
+	)
+
+	// ── Tarjeta CLIENTE ───────────────────────────────────────────────────
+	icnCli := canvas.NewText("▷", colAccent)
+	icnCli.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	icnCli.TextSize = 28
+
+	tituloCli := canvas.NewText("CLIENTE", colPrimary)
+	tituloCli.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	tituloCli.TextSize = 15
+
+	descCli := canvas.NewText("Conecta a un servidor remoto.\nEnvía comandos y ve la salida.", colMuted)
+	descCli.TextStyle = fyne.TextStyle{Monospace: true}
+	descCli.TextSize = 11
+
+	btnCli := widget.NewButton("[ INICIAR COMO CLIENTE ]", func() {
+		w.Hide()
+		mostrarLogin(a, modoCliente)
+	})
+	btnCli.Importance = widget.MediumImportance
+
+	cardCli := container.NewVBox(
+		container.NewCenter(icnCli),
+		container.NewCenter(tituloCli),
+		container.NewCenter(descCli),
+		spacer(),
+		container.NewCenter(btnCli),
+	)
+
+	// ── Layout ────────────────────────────────────────────────────────────
+	cabecera := container.NewVBox(
+		spacer(),
+		container.NewCenter(logo),
+		container.NewCenter(sub),
+		spacer(),
+		container.NewCenter(container.NewHBox(deco)),
+		spacer(),
+	)
+
+	tarjetas := container.NewGridWithColumns(2, cardSrv, cardCli)
+
+	cuerpo := container.NewVBox(
+		cabecera,
+		hRule(),
+		spacer(),
+		tarjetas,
+		spacer(),
+	)
+
+	w.SetContent(container.NewPadded(container.NewPadded(cuerpo)))
+	w.ShowAndRun()
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LOGIN
+// ══════════════════════════════════════════════════════════════════════════════
+
+// mostrarLogin muestra la pantalla de autenticación.
+// Si el login es exitoso abre la ventana correspondiente al modo elegido.
+func mostrarLogin(a fyne.App, modo modoApp) {
+	intentos := 0
 
 	w := a.NewWindow("ShellOS — Autenticación")
 	w.Resize(fyne.NewSize(460, 500))
@@ -30,6 +148,15 @@ func main() {
 	logo.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	logo.TextSize = 28
 	logo.Alignment = fyne.TextAlignCenter
+
+	modotxt := "[ modo: SERVIDOR ]"
+	if modo == modoCliente {
+		modotxt = "[ modo: CLIENTE ]"
+	}
+	subModo := canvas.NewText(modotxt, colAccent)
+	subModo.TextStyle = fyne.TextStyle{Monospace: true}
+	subModo.TextSize = 11
+	subModo.Alignment = fyne.TextAlignCenter
 
 	sub := canvas.NewText("secure authentication layer", colMuted)
 	sub.TextStyle = fyne.TextStyle{Monospace: true}
@@ -42,13 +169,14 @@ func main() {
 	cabecera := container.NewVBox(
 		spacer(),
 		container.NewCenter(logo),
+		container.NewCenter(subModo),
 		container.NewCenter(sub),
 		spacer(),
 		container.NewCenter(container.NewHBox(deco)),
 		spacer(),
 	)
 
-	// ── Campos de entrada ─────────────────────────────────────────────────
+	// ── Campos ───────────────────────────────────────────────────────────
 	lblUser := canvas.NewText("USUARIO", colMuted)
 	lblUser.TextStyle = fyne.TextStyle{Monospace: true}
 	lblUser.TextSize = 10
@@ -65,7 +193,7 @@ func main() {
 	inpPass.SetPlaceHolder("••••••••")
 	inpPass.TextStyle = fyne.TextStyle{Monospace: true}
 
-	// ── Mensajes de estado ────────────────────────────────────────────────
+	// ── Estado ────────────────────────────────────────────────────────────
 	msgStatus := canvas.NewText("", colMuted)
 	msgStatus.TextStyle = fyne.TextStyle{Monospace: true}
 	msgStatus.TextSize = 12
@@ -76,12 +204,11 @@ func main() {
 	msgIntentos.TextSize = 10
 	msgIntentos.Alignment = fyne.TextAlignCenter
 
-	// ── Botón de login ────────────────────────────────────────────────────
+	// ── Botón ─────────────────────────────────────────────────────────────
 	button := widget.NewButton("[ INICIAR SESIÓN ]", nil)
 	button.Importance = widget.HighImportance
 
 	accion := func() {
-		// validarCredenciales está definido en auth.go
 		valido, err := validarCredenciales(inpUser.Text, inpPass.Text)
 		if err != nil {
 			msgStatus.Text = "✗  error al leer credenciales"
@@ -92,12 +219,15 @@ func main() {
 
 		if valido {
 			w.Hide()
-			// mostrarVentanaPrincipal está definido en ventana.go
-			mostrarVentanaPrincipal(a)
+			switch modo {
+			case modoServidor:
+				mostrarVentanaServidor(a)
+			case modoCliente:
+				mostrarVentanaConexion(a) // definido en red_cliente.go
+			}
 			return
 		}
 
-		// Credenciales incorrectas
 		intentos++
 		msgIntentos.Text = fmt.Sprintf("intentos: %d de 3", intentos)
 		msgIntentos.Refresh()
@@ -114,34 +244,119 @@ func main() {
 	inpPass.OnSubmitted = func(_ string) { accion() }
 
 	// ── Layout ────────────────────────────────────────────────────────────
-	formulario := container.NewVBox(
-		lblUser, inpUser,
-		spacer(),
-		lblPass, inpPass,
-	)
+	formulario := container.NewVBox(lblUser, inpUser, spacer(), lblPass, inpPass)
 	pie := container.NewVBox(
 		container.NewCenter(msgStatus),
 		container.NewCenter(msgIntentos),
 	)
 	cuerpo := container.NewVBox(
-		cabecera,
-		hRule(),
-		spacer(),
-		formulario,
-		spacer(),
-		hRule(),
-		spacer(),
-		container.NewCenter(button),
-		spacer(),
-		pie,
+		cabecera, hRule(), spacer(),
+		formulario, spacer(), hRule(), spacer(),
+		container.NewCenter(button), spacer(), pie,
 	)
 
 	w.SetContent(container.NewPadded(container.NewPadded(cuerpo)))
 	w.Canvas().Focus(inpUser)
-	w.ShowAndRun()
+	w.Show()
 }
 
-// mostrarPantallaBloqueo reemplaza el contenido de la ventana con un mensaje
+// ══════════════════════════════════════════════════════════════════════════════
+//  VENTANA SERVIDOR
+// ══════════════════════════════════════════════════════════════════════════════
+
+// mostrarVentanaServidor abre el panel del servidor: inicia el socket TCP
+// y muestra un log en tiempo real de todas las conexiones y comandos.
+func mostrarVentanaServidor(a fyne.App) {
+	w := a.NewWindow("ShellOS — Servidor")
+	w.Resize(fyne.NewSize(860, 620))
+	w.CenterOnScreen()
+
+	stop := make(chan struct{})
+	w.SetOnClosed(func() { close(stop) })
+
+	// ── Título ────────────────────────────────────────────────────────────
+	titBar := canvas.NewText("▣  ShellOS  —  modo SERVIDOR", colAccent)
+	titBar.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	titBar.TextSize = 13
+
+	estadoLbl := canvas.NewText("● iniciando...", colMuted)
+	estadoLbl.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	estadoLbl.TextSize = 11
+
+	barTitulo := container.NewBorder(nil, nil, nil,
+		container.NewPadded(estadoLbl),
+		container.NewPadded(titBar),
+	)
+
+	// ── Info fija ─────────────────────────────────────────────────────────
+	infoLbl := canvas.NewText(
+		fmt.Sprintf("  Puerto: %s    Log: %s    OS: %s", puertoServidor, archivoLog, sistemaOperativo()),
+		colMuted,
+	)
+	infoLbl.TextStyle = fyne.TextStyle{Monospace: true}
+	infoLbl.TextSize = 11
+
+	// ── Log en vivo ───────────────────────────────────────────────────────
+	logLabel := widget.NewLabel("")
+	logLabel.TextStyle = fyne.TextStyle{Monospace: true}
+	logLabel.Wrapping = fyne.TextWrapWord
+	scroll := container.NewVScroll(logLabel)
+
+	var lineas []string
+	// onLog es llamado desde goroutines; usamos canal para serializar al hilo GUI
+	logCh := make(chan string, 64)
+	go func() {
+		for msg := range logCh {
+			lineas = append(lineas, "  "+msg)
+			logLabel.SetText(joinLines(lineas))
+			scroll.ScrollToBottom()
+		}
+	}()
+	onLog := func(msg string) { logCh <- msg }
+
+	onLog("═══════════════════════════════════════════════════════════")
+	onLog("  ShellOS  —  Servidor TCP iniciando")
+	onLog("═══════════════════════════════════════════════════════════")
+
+	// ── Iniciar servidor ──────────────────────────────────────────────────
+	err := iniciarServidor(onLog, stop) // definido en red_servidor.go
+	if err != nil {
+		estadoLbl.Text = "● ERROR"
+		estadoLbl.Color = colError
+		estadoLbl.Refresh()
+		onLog("✗  " + err.Error())
+	} else {
+		estadoLbl.Text = fmt.Sprintf("● ESCUCHANDO  %s", puertoServidor)
+		estadoLbl.Color = colGreen
+		estadoLbl.Refresh()
+	}
+
+	// ── Layout ────────────────────────────────────────────────────────────
+	top := container.NewVBox(barTitulo, hRule(), container.NewPadded(infoLbl), hRule())
+
+	w.SetContent(container.NewBorder(
+		top, nil, nil, nil,
+		container.NewPadded(scroll),
+	))
+	w.Show()
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+func joinLines(ls []string) string {
+	sb := ""
+	for i, l := range ls {
+		if i > 0 {
+			sb += "\n"
+		}
+		sb += l
+	}
+	return sb
+}
+
+// mostrarPantallaBloqueo reemplaza el contenido de la ventana con un aviso
 // de acceso bloqueado tras agotar los intentos permitidos.
 func mostrarPantallaBloqueo(w fyne.Window, intentosFallidos int) {
 	blk1 := canvas.NewText("⛔  ACCESO BLOQUEADO", colError)
@@ -161,11 +376,19 @@ func mostrarPantallaBloqueo(w fyne.Window, intentosFallidos int) {
 
 	w.SetContent(container.NewCenter(container.NewVBox(
 		spacer(), spacer(),
-		container.NewCenter(blk1),
-		spacer(),
-		container.NewCenter(blk2),
-		spacer(),
+		container.NewCenter(blk1), spacer(),
+		container.NewCenter(blk2), spacer(),
 		container.NewCenter(blk3),
 		spacer(), spacer(),
 	)))
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MAIN
+// ══════════════════════════════════════════════════════════════════════════════
+
+func main() {
+	a := app.New()
+	a.Settings().SetTheme(&shellTheme{})
+	mostrarSeleccionModo(a)
 }
