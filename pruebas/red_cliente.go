@@ -209,13 +209,13 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	agregar("  ╚═══════════════════════════════════════════════╝")
 	agregar("")
 
+	// ── Entrada de comandos ───────────────────────────────────────────────
+	promptLbl := labelMuted("~  »")
+
 	// Solicitar pwd inicial para mostrar la ruta desde el primer momento
 	if _, pwd, err := cs.enviarComando("pwd"); err == nil && pwd != "" {
 		promptLbl.SetText(pwd + "  »")
 	}
-
-	// ── Entrada de comandos ───────────────────────────────────────────────
-	promptLbl := labelMuted("~  »")
 
 	entrada := widget.NewEntry()
 	entrada.SetPlaceHolder("comando remoto…")
