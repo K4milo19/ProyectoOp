@@ -78,8 +78,11 @@ func manejarCliente(conn net.Conn, onLog func(string)) {
 			salida = "[ sin salida ]"
 		}
 
-		// Enviar salida al cliente; el marcador indica fin de respuesta
-		fmt.Fprintf(conn, "%s\n<<<END>>>\n", salida)
+		// Obtener directorio actual tras ejecutar el comando (cd lo cambia)
+		pwd, _ := os.Getwd()
+
+		// Protocolo: primera línea = pwd, luego salida, luego marcador de fin
+		fmt.Fprintf(conn, "<<<PWD:%s>>>\n%s\n<<<END>>>\n", pwd, salida)
 
 		escribirLog(remoto, linea, salida)
 		onLog(fmt.Sprintf("[ CMD ]  %s  →  %s", remoto, linea))

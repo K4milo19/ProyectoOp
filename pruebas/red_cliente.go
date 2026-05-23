@@ -41,12 +41,13 @@ func conectarServidor(host string) (*ConexionServidor, error) {
 	}, nil
 }
 
-// enviarComando manda una línea al servidor y recoge la respuesta completa
-// (el servidor termina cada respuesta con "<<<END>>>").
-func (c *ConexionServidor) enviarComando(cmd string) (string, error) {
-	_, err := fmt.Fprintf(c.conn, "%s\n", cmd)
+// enviarComando manda una línea al servidor y recoge la respuesta completa.
+// Devuelve (salida, pwd, error). El servidor envía primero una línea con el
+// directorio actual "<<<PWD:/ruta>>>", luego la salida y finalmente "<<<END>>>".
+func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err error) {
+	_, err = fmt.Fprintf(c.conn, "%s\n", cmd)
 	if err != nil {
-		return "", fmt.Errorf("error al enviar: %w", err)
+		return "", "", fmt.Errorf("error al enviar: %w", err)
 	}
 
 	var sb strings.Builder
@@ -55,13 +56,18 @@ func (c *ConexionServidor) enviarComando(cmd string) (string, error) {
 		if linea == "<<<END>>>" {
 			break
 		}
+		// Primera línea especial con el directorio actual
+		if strings.HasPrefix(linea, "<<<PWD:") && strings.HasSuffix(linea, ">>>") {
+			pwd = strings.TrimSuffix(strings.TrimPrefix(linea, "<<<PWD:"), ">>>")
+			continue
+		}
 		sb.WriteString(linea)
 		sb.WriteByte('\n')
 	}
-	if err := c.scanner.Err(); err != nil {
-		return sb.String(), fmt.Errorf("error al leer respuesta: %w", err)
+	if err = c.scanner.Err(); err != nil {
+		return sb.String(), pwd, fmt.Errorf("error al leer respuesta: %w", err)
 	}
-	return strings.TrimRight(sb.String(), "\n"), nil
+	return strings.TrimRight(sb.String(), "\n"), pwd, nil
 }
 
 // cerrar cierra la conexión TCP.
@@ -203,8 +209,13 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	agregar("  ╚═══════════════════════════════════════════════╝")
 	agregar("")
 
+	// Solicitar pwd inicial para mostrar la ruta desde el primer momento
+	if _, pwd, err := cs.enviarComando("pwd"); err == nil && pwd != "" {
+		promptLbl.SetText(pwd + "  »")
+	}
+
 	// ── Entrada de comandos ───────────────────────────────────────────────
-	promptLbl := labelMuted(host + "  »")
+	promptLbl := labelMuted("~  »")
 
 	entrada := widget.NewEntry()
 	entrada.SetPlaceHolder("comando remoto…")
@@ -217,9 +228,9 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 			return
 		}
 
-		agregar(fmt.Sprintf("  %s  » %s", host, texto))
+		agregar(fmt.Sprintf("  %s  » %s", promptLbl.Text, texto))
 
-		salida, err := cs.enviarComando(texto)
+		salida, pwd, err := cs.enviarComando(texto)
 		if err != nil {
 			agregar("  ✗ error de red: " + err.Error())
 			estadoLbl.Text = "● DESCONECTADO"
@@ -230,12 +241,16 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 			return
 		}
 
+		// Actualizar prompt con la ruta actual del servidor
+		if pwd != "" {
+			promptLbl.SetText(pwd + "  »")
+		}
+
 		for _, l := range strings.Split(salida, "\n") {
 			agregar("  " + l)
 		}
 		agregar("")
 
-		// Si el servidor cerró la sesión
 		if texto == "bye" || texto == "exit" {
 			estadoLbl.Text = "● DESCONECTADO"
 			estadoLbl.Color = colError
