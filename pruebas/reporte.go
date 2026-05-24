@@ -2,10 +2,7 @@ package main
 
 // reporte.go
 // Monitor del sistema — solo Linux.
-// Una única goroutine se ejecuta cada 5 segundos y actualiza en pantalla:
-//   - CPU  : porcentaje de uso
-//   - RAM  : MB ocupados vs MB disponibles
-//   - Disco: GB usados vs GB totales en /
+// Todo el estado vive dentro de la goroutine, sin variables globales.
 
 import (
 	"bufio"
@@ -14,27 +11,18 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"fyne.io/fyne/v2/widget"
 )
 
-// ── Variables de estado para el delta de CPU ──────────────────────────────────
+// ── Lectura de CPU ────────────────────────────────────────────────────────────
+// Devuelve (idle, total) crudos para que la goroutine calcule el delta.
 
-var (
-	prevIdle  uint64
-	prevTotal uint64
-	cpuMu     sync.Mutex
-)
-
-// ── Lecturas ──────────────────────────────────────────────────────────────────
-
-// leerCPU devuelve el % de uso de CPU calculado entre dos lecturas consecutivas.
-func leerCPU() float64 {
+func leerStatCPU() (idle, total uint64) {
 	f, err := os.Open("/proc/stat")
 	if err != nil {
-		return 0
+		return
 	}
 	defer f.Close()
 
@@ -46,31 +34,30 @@ func leerCPU() float64 {
 		}
 		campos := strings.Fields(linea)
 		if len(campos) < 8 {
-			break
+			return
 		}
-		p := func(s string) uint64 { v, _ := strconv.ParseUint(s, 10, 64); return v }
-
-		idle    := p(campos[4]) + p(campos[5])
-		total   := p(campos[1]) + p(campos[2]) + p(campos[3]) +
-		           p(campos[4]) + p(campos[5]) + p(campos[6]) + p(campos[7])
-
-		cpuMu.Lock()
-		dIdle  := idle - prevIdle
-		dTotal := total - prevTotal
-		prevIdle  = idle
-		prevTotal = total
-		cpuMu.Unlock()
-
-		if dTotal == 0 {
-			return 0
+		p := func(s string) uint64 {
+			v, _ := strconv.ParseUint(s, 10, 64)
+			return v
 		}
-		return (1.0 - float64(dIdle)/float64(dTotal)) * 100.0
+		user    := p(campos[1])
+		nice    := p(campos[2])
+		system  := p(campos[3])
+		idleT   := p(campos[4])
+		iowait  := p(campos[5])
+		irq     := p(campos[6])
+		softirq := p(campos[7])
+
+		idle  = idleT + iowait
+		total = user + nice + system + idleT + iowait + irq + softirq
+		return
 	}
-	return 0
+	return
 }
 
-// leerRAM devuelve MB usados y MB disponibles desde /proc/meminfo.
-func leerRAM() (usadoMB, disponibleMB float64) {
+// ── Lectura de RAM ────────────────────────────────────────────────────────────
+
+func leerRAM() (usadoMB, libreMB float64, ok bool) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return
@@ -88,18 +75,23 @@ func leerRAM() (usadoMB, disponibleMB float64) {
 		v[strings.TrimSuffix(partes[0], ":")] = val
 	}
 
-	// disponible = lo que el kernel puede dar a procesos nuevos
-	disp := v["MemFree"] + v["Buffers"] + v["Cached"] + v["SReclaimable"]
-	usado := v["MemTotal"] - disp
+	total, existeTotal := v["MemTotal"]
+	if !existeTotal || total == 0 {
+		return
+	}
 
-	usadoMB     = float64(usado) / 1024.0
-	disponibleMB = float64(disp)  / 1024.0
+	libre := v["MemFree"] + v["Buffers"] + v["Cached"] + v["SReclaimable"]
+	usado := total - libre
+
+	usadoMB = float64(usado) / 1024.0
+	libreMB = float64(libre) / 1024.0
+	ok = true
 	return
 }
 
-// leerDisco devuelve GB usados y GB totales del sistema de archivos raíz
-// usando el comando df, que está disponible en cualquier Linux sin imports nativos.
-func leerDisco() (usadoGB, totalGB float64) {
+// ── Lectura de Disco ──────────────────────────────────────────────────────────
+
+func leerDisco() (usadoGB, totalGB float64, ok bool) {
 	out, err := exec.Command("df", "-B1", "--output=size,used", "/").Output()
 	if err != nil {
 		return
@@ -112,22 +104,29 @@ func leerDisco() (usadoGB, totalGB float64) {
 	if len(campos) < 2 {
 		return
 	}
-	total, _ := strconv.ParseUint(campos[0], 10, 64)
-	usado, _  := strconv.ParseUint(campos[1], 10, 64)
+	total, err1 := strconv.ParseUint(campos[0], 10, 64)
+	usado, err2 := strconv.ParseUint(campos[1], 10, 64)
+	if err1 != nil || err2 != nil || total == 0 {
+		return
+	}
 	totalGB = float64(total) / (1 << 30)
 	usadoGB = float64(usado) / (1 << 30)
+	ok = true
 	return
 }
 
 // ── Goroutine principal ───────────────────────────────────────────────────────
 
-// reporte lanza una goroutine que cada 5 segundos lee CPU, RAM y disco
-// y actualiza los tres widget.Label recibidos con SetText().
-// Se detiene limpiamente cuando se cierra el canal stop.
+// reporte lanza una goroutine que cada 5 segundos actualiza los tres labels.
+// El estado del delta de CPU vive dentro de la goroutine — sin variables globales.
 func reporte(lblCPU, lblRAM, lblDisco *widget.Label, stop <-chan struct{}) {
-	leerCPU() // inicializa prevIdle/prevTotal para que el primer delta sea válido
-
 	go func() {
+		// Estado del delta de CPU encapsulado aquí dentro
+		var prevIdle, prevTotal uint64
+
+		// Primera lectura para inicializar el delta
+		prevIdle, prevTotal = leerStatCPU()
+
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
@@ -136,24 +135,38 @@ func reporte(lblCPU, lblRAM, lblDisco *widget.Label, stop <-chan struct{}) {
 			case <-stop:
 				return
 			case <-ticker.C:
-				cpu                    := leerCPU()
-				ramUsado, ramDisp      := leerRAM()
-				discoUsado, discoTotal := leerDisco()
+				// ── CPU ──────────────────────────────────────────
+				idle, total := leerStatCPU()
+				dIdle  := idle - prevIdle
+				dTotal := total - prevTotal
+				prevIdle  = idle
+				prevTotal = total
+
+				var cpu float64
+				if dTotal > 0 {
+					cpu = (1.0 - float64(dIdle)/float64(dTotal)) * 100.0
+				}
 
 				lblCPU.SetText(fmt.Sprintf(
 					"CPU\n%s\n%.1f%%",
 					barra(cpu, 18), cpu,
 				))
 
-				lblRAM.SetText(fmt.Sprintf(
-					"RAM\nusada:  %6.0f MB\nlibre:  %6.0f MB",
-					ramUsado, ramDisp,
-				))
+				// ── RAM ──────────────────────────────────────────
+				if usadoMB, libreMB, ok := leerRAM(); ok {
+					lblRAM.SetText(fmt.Sprintf(
+						"RAM\nusada:  %.0f MB\nlibre:  %.0f MB",
+						usadoMB, libreMB,
+					))
+				}
 
-				lblDisco.SetText(fmt.Sprintf(
-					"DISCO\nusada: %5.1f GB\ntotal: %5.1f GB\nlibre: %5.1f GB",
-					discoUsado, discoTotal, discoTotal-discoUsado,
-				))
+				// ── Disco ─────────────────────────────────────────
+				if usadoGB, totalGB, ok := leerDisco(); ok {
+					lblDisco.SetText(fmt.Sprintf(
+						"DISCO\nusada: %.1f GB\ntotal: %.1f GB\nlibre: %.1f GB",
+						usadoGB, totalGB, totalGB-usadoGB,
+					))
+				}
 			}
 		}
 	}()

@@ -45,7 +45,6 @@ func mostrarVentanaPrincipal(a fyne.App) {
 
 	lblDisco := widget.NewLabel("DISCO  usada:  --.-- GB   total:       --.-- GB   libre: --.-- GB")
 	lblDisco.TextStyle = fyne.TextStyle{Monospace: true}
-
 	panelMetricas := container.NewVBox(
 		container.NewPadded(tituloMetricas),
 		container.NewPadded(lblCPU),
@@ -53,7 +52,7 @@ func mostrarVentanaPrincipal(a fyne.App) {
 		container.NewPadded(lblDisco),
 	)
 
-	reporte(lblCPU, lblRAM, lblDisco, stopReporte)
+	go reporte(lblCPU, lblRAM, lblDisco, stopReporte)
 
 	// ── Historial ─────────────────────────────────────────────────────────
 	historial := widget.NewLabel("")

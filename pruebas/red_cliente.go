@@ -214,7 +214,7 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	)
 
 	// Iniciar goroutine de métricas locales
-	reporte(lblCPU, lblRAM, lblDisco, stopReporte)
+	go reporte(lblCPU, lblRAM, lblDisco, stopReporte)
 
 	// ── Historial ─────────────────────────────────────────────────────────
 	historial := widget.NewLabel("")
