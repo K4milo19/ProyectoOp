@@ -141,17 +141,17 @@ func reporte(lblCPU, lblRAM, lblDisco *widget.Label, stop <-chan struct{}) {
 				discoUsado, discoTotal := leerDisco()
 
 				lblCPU.SetText(fmt.Sprintf(
-					"CPU    %s  %.1f%%",
-					barra(cpu, 24), cpu,
+					"CPU\n%s\n%.1f%%",
+					barra(cpu, 18), cpu,
 				))
 
 				lblRAM.SetText(fmt.Sprintf(
-					"RAM    usada: %6.0f MB   disponible: %6.0f MB",
+					"RAM\nusada:  %6.0f MB\nlibre:  %6.0f MB",
 					ramUsado, ramDisp,
 				))
 
 				lblDisco.SetText(fmt.Sprintf(
-					"DISCO  usada: %5.1f GB   total: %5.1f GB   libre: %.1f GB",
+					"DISCO\nusada: %5.1f GB\ntotal: %5.1f GB\nlibre: %5.1f GB",
 					discoUsado, discoTotal, discoTotal-discoUsado,
 				))
 			}

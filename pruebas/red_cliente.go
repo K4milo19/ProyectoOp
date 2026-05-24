@@ -2,9 +2,9 @@ package main
 
 // red_cliente.go
 // Cliente TCP de ShellOS.
-// Muestra una ventana de terminal donde el usuario escribe comandos que se
-// envían al servidor y cuya salida se recibe y muestra en pantalla.
-// No ejecuta nada localmente: todo ocurre en el servidor.
+// Ventana dividida en dos zonas:
+//   - Izquierda: terminal remota (comandos al servidor)
+//   - Derecha:   panel de métricas locales del cliente (CPU, RAM, Disco)
 
 import (
 	"bufio"
@@ -21,16 +21,13 @@ import (
 
 // ── Conexión al servidor ──────────────────────────────────────────────────────
 
-// ConexionServidor encapsula el socket y el reader/writer hacia el servidor.
 type ConexionServidor struct {
 	conn    net.Conn
 	scanner *bufio.Scanner
 }
 
-// conectarServidor intenta conectarse al servidor TCP.
-// Devuelve error si no lo logra en 5 segundos.
 func conectarServidor(host string) (*ConexionServidor, error) {
-	addr := host + puertoServidor // puertoServidor definido en red_servidor.go
+	addr := host + puertoServidor
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("no se pudo conectar a %s: %w", addr, err)
@@ -41,9 +38,8 @@ func conectarServidor(host string) (*ConexionServidor, error) {
 	}, nil
 }
 
-// enviarComando manda una línea al servidor y recoge la respuesta completa.
-// Devuelve (salida, pwd, error). El servidor envía primero una línea con el
-// directorio actual "<<<PWD:/ruta>>>", luego la salida y finalmente "<<<END>>>".
+// enviarComando manda un comando al servidor y recoge (salida, pwd, error).
+// El servidor responde con <<<PWD:/ruta>>>, luego la salida, luego <<<END>>>.
 func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err error) {
 	_, err = fmt.Fprintf(c.conn, "%s\n", cmd)
 	if err != nil {
@@ -56,7 +52,6 @@ func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err er
 		if linea == "<<<END>>>" {
 			break
 		}
-		// Primera línea especial con el directorio actual
 		if strings.HasPrefix(linea, "<<<PWD:") && strings.HasSuffix(linea, ">>>") {
 			pwd = strings.TrimSuffix(strings.TrimPrefix(linea, "<<<PWD:"), ">>>")
 			continue
@@ -70,23 +65,19 @@ func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err er
 	return strings.TrimRight(sb.String(), "\n"), pwd, nil
 }
 
-// cerrar cierra la conexión TCP.
 func (c *ConexionServidor) cerrar() {
 	if c.conn != nil {
 		c.conn.Close()
 	}
 }
 
-// ── Ventana de conexión (pide IP del servidor) ────────────────────────────────
+// ── Ventana de conexión ───────────────────────────────────────────────────────
 
-// mostrarVentanaConexion muestra un diálogo para ingresar la IP del servidor.
-// Al conectar exitosamente abre la terminal remota.
 func mostrarVentanaConexion(a fyne.App) {
 	w := a.NewWindow("ShellOS — Conectar al servidor")
 	w.Resize(fyne.NewSize(420, 320))
 	w.CenterOnScreen()
 
-	// ── Cabecera ──────────────────────────────────────────────────────────
 	titulo := canvas.NewText("MODO CLIENTE", colPrimary)
 	titulo.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	titulo.TextSize = 22
@@ -97,7 +88,6 @@ func mostrarVentanaConexion(a fyne.App) {
 	sub.TextSize = 11
 	sub.Alignment = fyne.TextAlignCenter
 
-	// ── Campo IP ──────────────────────────────────────────────────────────
 	lblIP := canvas.NewText("IP DEL SERVIDOR", colMuted)
 	lblIP.TextStyle = fyne.TextStyle{Monospace: true}
 	lblIP.TextSize = 10
@@ -107,13 +97,11 @@ func mostrarVentanaConexion(a fyne.App) {
 	inpIP.TextStyle = fyne.TextStyle{Monospace: true}
 	inpIP.Text = "localhost"
 
-	// ── Estado ────────────────────────────────────────────────────────────
 	msgErr := canvas.NewText("", colError)
 	msgErr.TextStyle = fyne.TextStyle{Monospace: true}
 	msgErr.TextSize = 11
 	msgErr.Alignment = fyne.TextAlignCenter
 
-	// ── Botón conectar ────────────────────────────────────────────────────
 	btnConectar := widget.NewButton("[ CONECTAR ]", nil)
 	btnConectar.Importance = widget.HighImportance
 
@@ -143,7 +131,6 @@ func mostrarVentanaConexion(a fyne.App) {
 	btnConectar.OnTapped = accion
 	inpIP.OnSubmitted = func(_ string) { accion() }
 
-	// ── Layout ────────────────────────────────────────────────────────────
 	cuerpo := container.NewVBox(
 		spacer(),
 		container.NewCenter(titulo),
@@ -164,13 +151,17 @@ func mostrarVentanaConexion(a fyne.App) {
 
 // ── Terminal remota ───────────────────────────────────────────────────────────
 
-// mostrarTerminalCliente abre la ventana de terminal del cliente.
-// Los comandos se envían al servidor y la respuesta se muestra en el historial.
 func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	w := a.NewWindow(fmt.Sprintf("ShellOS  —  cliente  →  %s", host))
-	w.Resize(fyne.NewSize(980, 680))
+	w.Resize(fyne.NewSize(1280, 700))
 	w.CenterOnScreen()
-	w.SetOnClosed(func() { cs.cerrar() })
+
+	// Canal para detener el reporte al cerrar
+	stopReporte := make(chan struct{})
+	w.SetOnClosed(func() {
+		cs.cerrar()
+		close(stopReporte)
+	})
 
 	// ── Barra de título ───────────────────────────────────────────────────
 	titBar := canvas.NewText(
@@ -188,6 +179,42 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 		container.NewPadded(estadoLbl),
 		container.NewPadded(titBar),
 	)
+
+	// ── Panel de métricas locales (derecha) ───────────────────────────────
+	tituloPanel := canvas.NewText("◈  ESTE EQUIPO", colAccent)
+	tituloPanel.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
+	tituloPanel.TextSize = 11
+
+	lblCPU := widget.NewLabel("CPU\n[ cargando... ]")
+	lblCPU.TextStyle = fyne.TextStyle{Monospace: true}
+	lblCPU.Wrapping = fyne.TextWrapWord
+
+	lblRAM := widget.NewLabel("RAM\nusada: -- MB\ndisponible: -- MB")
+	lblRAM.TextStyle = fyne.TextStyle{Monospace: true}
+	lblRAM.Wrapping = fyne.TextWrapWord
+
+	lblDisco := widget.NewLabel("DISCO\nusada: -- GB\ntotal: -- GB\nlibre: -- GB")
+	lblDisco.TextStyle = fyne.TextStyle{Monospace: true}
+	lblDisco.Wrapping = fyne.TextWrapWord
+
+	lblTick := canvas.NewText("cada 5 s", colMuted)
+	lblTick.TextStyle = fyne.TextStyle{Monospace: true}
+	lblTick.TextSize = 10
+
+	panelDerecho := container.NewVBox(
+		container.NewPadded(tituloPanel),
+		hRule(),
+		container.NewPadded(lblCPU),
+		hRule(),
+		container.NewPadded(lblRAM),
+		hRule(),
+		container.NewPadded(lblDisco),
+		hRule(),
+		container.NewPadded(lblTick),
+	)
+
+	// Iniciar goroutine de métricas locales
+	reporte(lblCPU, lblRAM, lblDisco, stopReporte)
 
 	// ── Historial ─────────────────────────────────────────────────────────
 	historial := widget.NewLabel("")
@@ -212,7 +239,6 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	// ── Entrada de comandos ───────────────────────────────────────────────
 	promptLbl := labelMuted("~  »")
 
-	// Solicitar pwd inicial para mostrar la ruta desde el primer momento
 	if _, pwd, err := cs.enviarComando("pwd"); err == nil && pwd != "" {
 		promptLbl.SetText(pwd + "  »")
 	}
@@ -241,7 +267,6 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 			return
 		}
 
-		// Actualizar prompt con la ruta actual del servidor
 		if pwd != "" {
 			promptLbl.SetText(pwd + "  »")
 		}
@@ -266,20 +291,22 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 
 	barCmd := container.NewBorder(nil, nil, promptLbl, btnEjec, entrada)
 
-	// ── Layout ────────────────────────────────────────────────────────────
-	top := container.NewVBox(
-		barTitulo,
-		hRule(),
-	)
-	bottom := container.NewVBox(
-		hRule(),
-		container.NewPadded(barCmd),
+	// ── Layout: terminal izquierda | panel métricas derecha ───────────────
+	terminal := container.NewBorder(
+		nil,
+		container.NewVBox(hRule(), container.NewPadded(barCmd)),
+		nil, nil,
+		container.NewPadded(scroll),
 	)
 
-	w.SetContent(container.NewBorder(
-		top, bottom, nil, nil,
-		container.NewPadded(scroll),
-	))
+	contenido := container.NewBorder(
+		container.NewVBox(barTitulo, hRule()),
+		nil, nil,
+		container.NewPadded(panelDerecho),  // panel fijo a la derecha
+		terminal,
+	)
+
+	w.SetContent(contenido)
 	w.Canvas().Focus(entrada)
 	w.Show()
 }
