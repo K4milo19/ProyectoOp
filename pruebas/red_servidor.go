@@ -5,6 +5,10 @@ package main
 // Escucha conexiones entrantes de clientes, recibe comandos en texto plano,
 // los ejecuta localmente con ejecutarComando() y devuelve la salida.
 // Cada comando y su resultado quedan registrados en logs.txt.
+//
+// MÉTRICAS: cada 5 segundos el servidor recopila CPU, RAM y Disco propios
+// y los empuja a TODOS los clientes conectados con el prefijo <<<METRICS:...>>>
+// El cliente detecta esas líneas y actualiza su panel derecho.
 
 import (
 	"bufio"
@@ -19,9 +23,41 @@ import (
 // ── Constantes ────────────────────────────────────────────────────────────────
 
 const (
-	puertoServidor = ":9000"   // puerto TCP en el que escucha el servidor
+	puertoServidor = ":9000"    // puerto TCP en el que escucha el servidor
 	archivoLog     = "logs.txt" // archivo donde se registran los comandos
 )
+
+// ── Registro de clientes conectados ──────────────────────────────────────────
+
+// clientesConectados mantiene un mapa conn→struct{} de todas las conexiones
+// activas para que el broadcaster de métricas pueda escribirles.
+var (
+	clientesMu       sync.RWMutex
+	clientesActivos  = make(map[net.Conn]struct{})
+)
+
+func registrarCliente(conn net.Conn) {
+	clientesMu.Lock()
+	clientesActivos[conn] = struct{}{}
+	clientesMu.Unlock()
+}
+
+func eliminarCliente(conn net.Conn) {
+	clientesMu.Lock()
+	delete(clientesActivos, conn)
+	clientesMu.Unlock()
+}
+
+// broadcastMetrics escribe la línea de métricas a todos los clientes.
+// Se ignoran los errores de escritura: si un cliente se cayó, el mapa
+// se limpiará cuando su goroutine manejarCliente termine.
+func broadcastMetrics(linea string) {
+	clientesMu.RLock()
+	defer clientesMu.RUnlock()
+	for conn := range clientesActivos {
+		fmt.Fprintf(conn, "%s\n", linea)
+	}
+}
 
 // ── Log ───────────────────────────────────────────────────────────────────────
 
@@ -48,14 +84,69 @@ func escribirLog(cliente, comando, salida string) {
 	f.WriteString(entrada)
 }
 
+// ── Broadcaster de métricas del servidor ──────────────────────────────────────
+
+// iniciarBroadcasterMetricas lanza una goroutine que cada 5 s lee las métricas
+// locales del servidor (CPU, RAM, Disco) y las envía a todos los clientes con
+// el formato:   <<<METRICS:CPU=12.3|RAM_USED=1024|RAM_FREE=2048|DISK_USED=40.1|DISK_TOTAL=100.0>>>
+// El cliente parsea ese prefijo y lo muestra en su panel derecho.
+func iniciarBroadcasterMetricas(stop <-chan struct{}) {
+	var prevIdle, prevTotal uint64
+	prevIdle, prevTotal = leerStatCPU()
+
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Second):
+			}
+
+			// CPU
+			idle, total := leerStatCPU()
+			dIdle := idle - prevIdle
+			dTotal := total - prevTotal
+			prevIdle = idle
+			prevTotal = total
+
+			var cpu float64
+			if dTotal > 0 {
+				cpu = (1.0 - float64(dIdle)/float64(dTotal)) * 100.0
+			}
+
+			// RAM
+			ramUsed, ramFree := 0.0, 0.0
+			if u, f, ok := leerRAM(); ok {
+				ramUsed, ramFree = u, f
+			}
+
+			// Disco
+			diskUsed, diskTotal := 0.0, 0.0
+			if u, t, ok := leerDisco(); ok {
+				diskUsed, diskTotal = u, t
+			}
+
+			linea := fmt.Sprintf(
+				"<<<METRICS:CPU=%.1f|RAM_USED=%.0f|RAM_FREE=%.0f|DISK_USED=%.1f|DISK_TOTAL=%.1f>>>",
+				cpu, ramUsed, ramFree, diskUsed, diskTotal,
+			)
+			broadcastMetrics(linea)
+		}
+	}()
+}
+
 // ── Manejo de cliente ─────────────────────────────────────────────────────────
 
 // manejarCliente atiende una conexión individual en su propio goroutine.
 // Lee líneas de texto (un comando por línea), ejecuta cada uno y responde
 // con la salida seguida del marcador "<<<END>>>".
 func manejarCliente(conn net.Conn, onLog func(string)) {
-	defer conn.Close()
+	defer func() {
+		eliminarCliente(conn)
+		conn.Close()
+	}()
 
+	registrarCliente(conn)
 	remoto := conn.RemoteAddr().String()
 	onLog(fmt.Sprintf("[ CONEXIÓN ]  %s conectado", remoto))
 
@@ -98,7 +189,6 @@ func manejarCliente(conn net.Conn, onLog func(string)) {
 // ── Servidor ──────────────────────────────────────────────────────────────────
 
 // obtenerIPs devuelve todas las IPs locales de la máquina (excluye loopback).
-// Se usa para mostrar al operador del servidor a qué IP deben conectarse los clientes.
 func obtenerIPs() []string {
 	var ips []string
 	ifaces, err := net.Interfaces()
@@ -106,7 +196,6 @@ func obtenerIPs() []string {
 		return []string{"(error obteniendo IPs)"}
 	}
 	for _, iface := range ifaces {
-		// Ignorar interfaces caídas y loopback
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
@@ -125,7 +214,6 @@ func obtenerIPs() []string {
 			if ip == nil || ip.IsLoopback() {
 				continue
 			}
-			// Incluir solo IPv4 para simplificar
 			if ip.To4() != nil {
 				ips = append(ips, ip.String())
 			}
@@ -138,8 +226,7 @@ func obtenerIPs() []string {
 }
 
 // iniciarServidor abre el socket TCP y acepta clientes indefinidamente.
-// onLog es un callback que se llama con cada evento para mostrarlo en la GUI.
-// stop es un canal que, al cerrarse, detiene el listener.
+// También arranca el broadcaster de métricas.
 func iniciarServidor(onLog func(string), stop <-chan struct{}) error {
 	ln, err := net.Listen("tcp", puertoServidor)
 	if err != nil {
@@ -148,6 +235,10 @@ func iniciarServidor(onLog func(string), stop <-chan struct{}) error {
 
 	onLog(fmt.Sprintf("◈  Servidor escuchando en %s", puertoServidor))
 	onLog(fmt.Sprintf("◈  Log guardado en: %s", archivoLog))
+	onLog("◈  Broadcast de métricas cada 5 s activado")
+
+	// Iniciar broadcaster de métricas del servidor → clientes
+	iniciarBroadcasterMetricas(stop)
 
 	// Goroutine que cierra el listener cuando se señaliza stop
 	go func() {
@@ -160,7 +251,6 @@ func iniciarServidor(onLog func(string), stop <-chan struct{}) error {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				// Error normal al cerrar el listener con stop
 				select {
 				case <-stop:
 					return

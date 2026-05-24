@@ -4,12 +4,18 @@ package main
 // Cliente TCP de ShellOS.
 // Ventana dividida en dos zonas:
 //   - Izquierda: terminal remota (comandos al servidor)
-//   - Derecha:   panel de métricas locales del cliente (CPU, RAM, Disco)
+//   - Derecha:   panel de métricas DEL SERVIDOR (CPU, RAM, Disco remotos)
+//
+// Las métricas llegan como mensajes push del servidor con el prefijo:
+//   <<<METRICS:CPU=12.3|RAM_USED=1024|RAM_FREE=2048|DISK_USED=40.1|DISK_TOTAL=100.0>>>
+// Estas líneas se filtran del flujo de respuesta a comandos y se aplican
+// directamente al panel derecho mediante parsearMetrics().
 
 import (
 	"bufio"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +30,10 @@ import (
 type ConexionServidor struct {
 	conn    net.Conn
 	scanner *bufio.Scanner
+
+	// onMetrics es llamado cada vez que llega un mensaje <<<METRICS:...>>>
+	// Se asigna desde mostrarTerminalCliente tras crear la conexión.
+	onMetrics func(cpu, ramUsed, ramFree, diskUsed, diskTotal float64)
 }
 
 func conectarServidor(host string) (*ConexionServidor, error) {
@@ -38,8 +48,39 @@ func conectarServidor(host string) (*ConexionServidor, error) {
 	}, nil
 }
 
+// parsearMetrics extrae los campos de una línea <<<METRICS:...>>>.
+// Devuelve false si la línea no tiene el formato correcto.
+func parsearMetrics(linea string) (cpu, ramUsed, ramFree, diskUsed, diskTotal float64, ok bool) {
+	if !strings.HasPrefix(linea, "<<<METRICS:") || !strings.HasSuffix(linea, ">>>") {
+		return
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(linea, "<<<METRICS:"), ">>>")
+	// inner = "CPU=12.3|RAM_USED=1024|RAM_FREE=2048|DISK_USED=40.1|DISK_TOTAL=100.0"
+	campos := strings.Split(inner, "|")
+	vals := make(map[string]float64, len(campos))
+	for _, c := range campos {
+		kv := strings.SplitN(c, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		v, err := strconv.ParseFloat(kv[1], 64)
+		if err != nil {
+			continue
+		}
+		vals[kv[0]] = v
+	}
+	cpu       = vals["CPU"]
+	ramUsed   = vals["RAM_USED"]
+	ramFree   = vals["RAM_FREE"]
+	diskUsed  = vals["DISK_USED"]
+	diskTotal = vals["DISK_TOTAL"]
+	ok = true
+	return
+}
+
 // enviarComando manda un comando al servidor y recoge (salida, pwd, error).
-// El servidor responde con <<<PWD:/ruta>>>, luego la salida, luego <<<END>>>.
+// Las líneas <<<METRICS:...>>> que lleguen mientras se espera la respuesta
+// se desvían a onMetrics en lugar de mezclarse con la salida del comando.
 func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err error) {
 	_, err = fmt.Fprintf(c.conn, "%s\n", cmd)
 	if err != nil {
@@ -49,6 +90,17 @@ func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err er
 	var sb strings.Builder
 	for c.scanner.Scan() {
 		linea := c.scanner.Text()
+
+		// Intercept de métricas push del servidor
+		if strings.HasPrefix(linea, "<<<METRICS:") {
+			if c.onMetrics != nil {
+				if cpu, ru, rf, du, dt, ok := parsearMetrics(linea); ok {
+					c.onMetrics(cpu, ru, rf, du, dt)
+				}
+			}
+			continue
+		}
+
 		if linea == "<<<END>>>" {
 			break
 		}
@@ -69,6 +121,51 @@ func (c *ConexionServidor) cerrar() {
 	if c.conn != nil {
 		c.conn.Close()
 	}
+}
+
+// ── Lectura asíncrona de métricas push ───────────────────────────────────────
+
+// escucharMetricasPush lee el socket en background esperando mensajes
+// <<<METRICS:...>>> que el servidor envía de forma proactiva (fuera del
+// ciclo request/response de comandos). Se lanza como goroutine.
+//
+// Nota: cuando el cliente está esperando la respuesta de un comando,
+// enviarComando() consume el stream —incluyendo los METRICS— directamente,
+// por lo que esta goroutine solo procesa los que llegan en "silencio"
+// (sin un comando pendiente). Para eso usamos un bufio.Scanner independiente
+// sobre la misma conexión: el scanner interno de ConexionServidor sólo se usa
+// dentro de enviarComando, por lo que no hay condición de carrera siempre que
+// el cliente no envíe dos comandos a la vez (lo cual es correcto aquí).
+//
+// Implementación simplificada: reutilizamos el mismo scanner de la conexión.
+// El scanner de enviarComando ya filtra los METRICS en tiempo real; esta
+// goroutine maneja los que llegan ENTRE comandos (idle period).
+func (c *ConexionServidor) escucharMetricasPush(stop <-chan struct{}) {
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			if !c.scanner.Scan() {
+				return // conexión cerrada
+			}
+			linea := c.scanner.Text()
+
+			if strings.HasPrefix(linea, "<<<METRICS:") {
+				if c.onMetrics != nil {
+					if cpu, ru, rf, du, dt, ok := parsearMetrics(linea); ok {
+						c.onMetrics(cpu, ru, rf, du, dt)
+					}
+				}
+				continue
+			}
+
+			// Cualquier otra línea inesperada fuera de un comando: ignorar.
+		}
+	}()
 }
 
 // ── Ventana de conexión ───────────────────────────────────────────────────────
@@ -156,11 +253,10 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	w.Resize(fyne.NewSize(1280, 700))
 	w.CenterOnScreen()
 
-	// Canal para detener el reporte al cerrar
-	stopReporte := make(chan struct{})
+	stopPush := make(chan struct{})
 	w.SetOnClosed(func() {
 		cs.cerrar()
-		close(stopReporte)
+		close(stopPush)
 	})
 
 	// ── Barra de título ───────────────────────────────────────────────────
@@ -180,24 +276,24 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 		container.NewPadded(titBar),
 	)
 
-	// ── Panel de métricas locales (derecha) ───────────────────────────────
-	tituloPanel := canvas.NewText("◈  ESTE EQUIPO", colAccent)
+	// ── Panel de métricas REMOTAS del servidor (derecha) ──────────────────
+	tituloPanel := canvas.NewText("◈  MÉTRICAS DEL SERVIDOR", colAccent)
 	tituloPanel.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	tituloPanel.TextSize = 11
 
-	lblCPU := widget.NewLabel("CPU\n[ cargando... ]")
+	lblCPU := widget.NewLabel("CPU\n[ esperando datos... ]")
 	lblCPU.TextStyle = fyne.TextStyle{Monospace: true}
 	lblCPU.Wrapping = fyne.TextWrapWord
 
-	lblRAM := widget.NewLabel("RAM\nusada: -- MB\ndisponible: -- MB")
+	lblRAM := widget.NewLabel("RAM\nusada: -- MB\nlibre: -- MB")
 	lblRAM.TextStyle = fyne.TextStyle{Monospace: true}
 	lblRAM.Wrapping = fyne.TextWrapWord
 
-	lblDisco := widget.NewLabel("DISCO\nusada: -- GB\ntotal: -- GB\nlibre: -- GB")
+	lblDisco := widget.NewLabel("DISCO\nusado: -- GB\ntotal: -- GB\nlibre: -- GB")
 	lblDisco.TextStyle = fyne.TextStyle{Monospace: true}
 	lblDisco.Wrapping = fyne.TextWrapWord
 
-	lblTick := canvas.NewText("cada 5 s", colMuted)
+	lblTick := canvas.NewText("push cada 5 s", colMuted)
 	lblTick.TextStyle = fyne.TextStyle{Monospace: true}
 	lblTick.TextSize = 10
 
@@ -213,8 +309,23 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 		container.NewPadded(lblTick),
 	)
 
-	// Iniciar goroutine de métricas locales
-	go reporte(lblCPU, lblRAM, lblDisco, stopReporte)
+	// ── Callback de métricas: actualiza el panel derecho en el hilo UI ────
+	cs.onMetrics = func(cpu, ramUsed, ramFree, diskUsed, diskTotal float64) {
+		fyne.Do(func() {
+			lblCPU.SetText(fmt.Sprintf("CPU: %.1f%%", cpu))
+			lblRAM.SetText(fmt.Sprintf(
+				"RAM — usada: %.0f MB  |  libre: %.0f MB",
+				ramUsed, ramFree,
+			))
+			lblDisco.SetText(fmt.Sprintf(
+				"DISCO — usado: %.1f GB  |  total: %.1f GB  |  libre: %.1f GB",
+				diskUsed, diskTotal, diskTotal-diskUsed,
+			))
+		})
+	}
+
+	// Arrancar escucha de métricas push (mensajes entre comandos)
+	cs.escucharMetricasPush(stopPush)
 
 	// ── Historial ─────────────────────────────────────────────────────────
 	historial := widget.NewLabel("")
@@ -233,6 +344,7 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	agregar("  ║        S H E L L O S  —  C L I E N T E       ║")
 	agregar(fmt.Sprintf("  ║  servidor: %-36s║", host+puertoServidor))
 	agregar("  ║  los comandos se ejecutan en el servidor      ║")
+	agregar("  ║  métricas del servidor → panel derecho        ║")
 	agregar("  ╚═══════════════════════════════════════════════╝")
 	agregar("")
 
@@ -302,7 +414,7 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	contenido := container.NewBorder(
 		container.NewVBox(barTitulo, hRule()),
 		nil, nil,
-		container.NewPadded(panelDerecho),  // panel fijo a la derecha
+		container.NewPadded(panelDerecho),
 		terminal,
 	)
 
