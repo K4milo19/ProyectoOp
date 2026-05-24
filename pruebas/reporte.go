@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/widget"
 )
 
 // ── Variables de estado para el delta de CPU ──────────────────────────────────
@@ -122,9 +122,9 @@ func leerDisco() (usadoGB, totalGB float64) {
 // ── Goroutine principal ───────────────────────────────────────────────────────
 
 // reporte lanza una goroutine que cada 5 segundos lee CPU, RAM y disco
-// y actualiza los tres canvas.Text recibidos.
+// y actualiza los tres widget.Label recibidos con SetText().
 // Se detiene limpiamente cuando se cierra el canal stop.
-func reporte(lblCPU, lblRAM, lblDisco *canvas.Text, stop <-chan struct{}) {
+func reporte(lblCPU, lblRAM, lblDisco *widget.Label, stop <-chan struct{}) {
 	leerCPU() // inicializa prevIdle/prevTotal para que el primer delta sea válido
 
 	go func() {
@@ -136,27 +136,24 @@ func reporte(lblCPU, lblRAM, lblDisco *canvas.Text, stop <-chan struct{}) {
 			case <-stop:
 				return
 			case <-ticker.C:
-				cpu                   := leerCPU()
-				ramUsado, ramDisp     := leerRAM()
+				cpu                    := leerCPU()
+				ramUsado, ramDisp      := leerRAM()
 				discoUsado, discoTotal := leerDisco()
 
-				lblCPU.Text = fmt.Sprintf(
+				lblCPU.SetText(fmt.Sprintf(
 					"CPU    %s  %.1f%%",
 					barra(cpu, 24), cpu,
-				)
-				lblCPU.Refresh()
+				))
 
-				lblRAM.Text = fmt.Sprintf(
+				lblRAM.SetText(fmt.Sprintf(
 					"RAM    usada: %6.0f MB   disponible: %6.0f MB",
 					ramUsado, ramDisp,
-				)
-				lblRAM.Refresh()
+				))
 
-				lblDisco.Text = fmt.Sprintf(
-					"DISCO  usada: %5.1f GB   total:      %5.1f GB   libre: %.1f GB",
+				lblDisco.SetText(fmt.Sprintf(
+					"DISCO  usada: %5.1f GB   total: %5.1f GB   libre: %.1f GB",
 					discoUsado, discoTotal, discoTotal-discoUsado,
-				)
-				lblDisco.Refresh()
+				))
 			}
 		}
 	}()

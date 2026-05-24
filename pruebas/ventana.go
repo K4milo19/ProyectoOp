@@ -37,17 +37,14 @@ func mostrarVentanaPrincipal(a fyne.App) {
 	tituloMetricas.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	tituloMetricas.TextSize = 11
 
-	lblCPU := canvas.NewText("CPU    [ cargando...                    ]  --.-%", colGreen)
+	lblCPU := widget.NewLabel("CPU    [ cargando...                    ]  --.-%")
 	lblCPU.TextStyle = fyne.TextStyle{Monospace: true}
-	lblCPU.TextSize = 12
 
-	lblRAM := canvas.NewText("RAM    usada:   ---- MB   disponible:   ---- MB", colGreen)
+	lblRAM := widget.NewLabel("RAM    usada:   ---- MB   disponible:   ---- MB")
 	lblRAM.TextStyle = fyne.TextStyle{Monospace: true}
-	lblRAM.TextSize = 12
 
-	lblDisco := canvas.NewText("DISCO  usada:  --.-- GB   total:       --.-- GB   libre: --.-- GB", colGreen)
+	lblDisco := widget.NewLabel("DISCO  usada:  --.-- GB   total:       --.-- GB   libre: --.-- GB")
 	lblDisco.TextStyle = fyne.TextStyle{Monospace: true}
-	lblDisco.TextSize = 12
 
 	panelMetricas := container.NewVBox(
 		container.NewPadded(tituloMetricas),
