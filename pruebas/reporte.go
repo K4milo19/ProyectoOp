@@ -1,14 +1,17 @@
 package main
 
 // reporte.go
-// Lectura de métricas del sistema — solo Linux (/proc).
-// Las tres lecturas (CPU, RAM, Red) se ejecutan en goroutines paralelas
-// y sus resultados se combinan con un WaitGroup antes de actualizar la GUI.
+// Monitor del sistema — solo Linux.
+// Una única goroutine se ejecuta cada 5 segundos y actualiza en pantalla:
+//   - CPU  : porcentaje de uso
+//   - RAM  : MB ocupados vs MB disponibles
+//   - Disco: GB usados vs GB totales en /
 
 import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,26 +20,17 @@ import (
 	"fyne.io/fyne/v2/canvas"
 )
 
-// ── Estructura de datos ───────────────────────────────────────────────────────
+// ── Variables de estado para el delta de CPU ──────────────────────────────────
 
-type MetricasSistema struct {
-	CPUPorcentaje float64
-	RAMUsadaMB    float64
-	RAMTotalMB    float64
-	RAMPorcentaje float64
-	NetRxBytes    uint64
-	NetTxBytes    uint64
-}
-
-// estado interno para el cálculo delta de CPU entre lecturas
 var (
 	prevIdle  uint64
 	prevTotal uint64
-	cpuMu     sync.Mutex // protege prevIdle y prevTotal
+	cpuMu     sync.Mutex
 )
 
-// ── Lecturas /proc ────────────────────────────────────────────────────────────
+// ── Lecturas ──────────────────────────────────────────────────────────────────
 
+// leerCPU devuelve el % de uso de CPU calculado entre dos lecturas consecutivas.
 func leerCPU() float64 {
 	f, err := os.Open("/proc/stat")
 	if err != nil {
@@ -54,215 +48,125 @@ func leerCPU() float64 {
 		if len(campos) < 8 {
 			break
 		}
-		parse := func(s string) uint64 {
-			v, _ := strconv.ParseUint(s, 10, 64)
-			return v
-		}
-		user    := parse(campos[1])
-		nice    := parse(campos[2])
-		system  := parse(campos[3])
-		idle    := parse(campos[4])
-		iowait  := parse(campos[5])
-		irq     := parse(campos[6])
-		softirq := parse(campos[7])
+		p := func(s string) uint64 { v, _ := strconv.ParseUint(s, 10, 64); return v }
 
-		idleNow  := idle + iowait
-		totalNow := user + nice + system + idle + iowait + irq + softirq
+		idle    := p(campos[4]) + p(campos[5])
+		total   := p(campos[1]) + p(campos[2]) + p(campos[3]) +
+		           p(campos[4]) + p(campos[5]) + p(campos[6]) + p(campos[7])
 
 		cpuMu.Lock()
-		deltaIdle  := idleNow - prevIdle
-		deltaTotal := totalNow - prevTotal
-		prevIdle   = idleNow
-		prevTotal  = totalNow
+		dIdle  := idle - prevIdle
+		dTotal := total - prevTotal
+		prevIdle  = idle
+		prevTotal = total
 		cpuMu.Unlock()
 
-		if deltaTotal == 0 {
+		if dTotal == 0 {
 			return 0
 		}
-		return (1.0 - float64(deltaIdle)/float64(deltaTotal)) * 100.0
+		return (1.0 - float64(dIdle)/float64(dTotal)) * 100.0
 	}
 	return 0
 }
 
-func leerRAM() (usadaMB, totalMB, porcentaje float64) {
+// leerRAM devuelve MB usados y MB disponibles desde /proc/meminfo.
+func leerRAM() (usadoMB, disponibleMB float64) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return
 	}
 	defer f.Close()
 
-	vals := map[string]uint64{}
+	v := map[string]uint64{}
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		partes := strings.Fields(scanner.Text())
 		if len(partes) < 2 {
 			continue
 		}
-		clave := strings.TrimSuffix(partes[0], ":")
-		v, _ := strconv.ParseUint(partes[1], 10, 64)
-		vals[clave] = v
+		val, _ := strconv.ParseUint(partes[1], 10, 64)
+		v[strings.TrimSuffix(partes[0], ":")] = val
 	}
 
-	total        := vals["MemTotal"]
-	libre        := vals["MemFree"]
-	buffers      := vals["Buffers"]
-	cached       := vals["Cached"]
-	sreclaimable := vals["SReclaimable"]
+	// disponible = lo que el kernel puede dar a procesos nuevos
+	disp := v["MemFree"] + v["Buffers"] + v["Cached"] + v["SReclaimable"]
+	usado := v["MemTotal"] - disp
 
-	disponible := libre + buffers + cached + sreclaimable
-	usada      := total - disponible
-
-	totalMB = float64(total) / 1024.0
-	usadaMB = float64(usada) / 1024.0
-	if total > 0 {
-		porcentaje = float64(usada) / float64(total) * 100.0
-	}
+	usadoMB     = float64(usado) / 1024.0
+	disponibleMB = float64(disp)  / 1024.0
 	return
 }
 
-func leerRed() (rxBytes, txBytes uint64) {
-	f, err := os.Open("/proc/net/dev")
+// leerDisco devuelve GB usados y GB totales del sistema de archivos raíz
+// usando el comando df, que está disponible en cualquier Linux sin imports nativos.
+func leerDisco() (usadoGB, totalGB float64) {
+	out, err := exec.Command("df", "-B1", "--output=size,used", "/").Output()
 	if err != nil {
 		return
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Scan() // cabecera 1
-	scanner.Scan() // cabecera 2
-	for scanner.Scan() {
-		linea := strings.TrimSpace(scanner.Text())
-		idx := strings.Index(linea, ":")
-		if idx < 0 {
-			continue
-		}
-		iface := strings.TrimSpace(linea[:idx])
-		if iface == "lo" {
-			continue
-		}
-		campos := strings.Fields(linea[idx+1:])
-		if len(campos) < 9 {
-			continue
-		}
-		rx, _ := strconv.ParseUint(campos[0], 10, 64)
-		tx, _ := strconv.ParseUint(campos[8], 10, 64)
-		rxBytes += rx
-		txBytes += tx
+	lineas := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lineas) < 2 {
+		return
 	}
+	campos := strings.Fields(lineas[1])
+	if len(campos) < 2 {
+		return
+	}
+	total, _ := strconv.ParseUint(campos[0], 10, 64)
+	usado, _  := strconv.ParseUint(campos[1], 10, 64)
+	totalGB = float64(total) / (1 << 30)
+	usadoGB = float64(usado) / (1 << 30)
 	return
 }
 
-// ── obtenerMetricas — lecturas paralelas con goroutines ───────────────────────
+// ── Goroutine principal ───────────────────────────────────────────────────────
 
-// obtenerMetricas lanza las tres lecturas de /proc en goroutines separadas
-// y espera a que todas terminen antes de devolver el resultado combinado.
-func obtenerMetricas() MetricasSistema {
-	var (
-		m   MetricasSistema
-		wg  sync.WaitGroup
-		mu  sync.Mutex
-	)
+// reporte lanza una goroutine que cada 5 segundos lee CPU, RAM y disco
+// y actualiza los tres canvas.Text recibidos.
+// Se detiene limpiamente cuando se cierra el canal stop.
+func reporte(lblCPU, lblRAM, lblDisco *canvas.Text, stop <-chan struct{}) {
+	leerCPU() // inicializa prevIdle/prevTotal para que el primer delta sea válido
 
-	wg.Add(3)
-
-	// Goroutine 1: CPU
 	go func() {
-		defer wg.Done()
-		v := leerCPU()
-		mu.Lock()
-		m.CPUPorcentaje = v
-		mu.Unlock()
-	}()
-
-	// Goroutine 2: RAM
-	go func() {
-		defer wg.Done()
-		usada, total, pct := leerRAM()
-		mu.Lock()
-		m.RAMUsadaMB    = usada
-		m.RAMTotalMB    = total
-		m.RAMPorcentaje = pct
-		mu.Unlock()
-	}()
-
-	// Goroutine 3: Red
-	go func() {
-		defer wg.Done()
-		rx, tx := leerRed()
-		mu.Lock()
-		m.NetRxBytes = rx
-		m.NetTxBytes = tx
-		mu.Unlock()
-	}()
-
-	wg.Wait()
-	return m
-}
-
-// ── Helpers de formato ────────────────────────────────────────────────────────
-
-func barraTexto(pct float64, ancho int) string {
-	llenos := int(pct / 100.0 * float64(ancho))
-	if llenos > ancho {
-		llenos = ancho
-	}
-	return "[" + strings.Repeat("█", llenos) + strings.Repeat("░", ancho-llenos) + "]"
-}
-
-func formatBytes(b uint64) string {
-	switch {
-	case b >= 1<<30:
-		return fmt.Sprintf("%.2f GB", float64(b)/(1<<30))
-	case b >= 1<<20:
-		return fmt.Sprintf("%.2f MB", float64(b)/(1<<20))
-	case b >= 1<<10:
-		return fmt.Sprintf("%.2f KB", float64(b)/(1<<10))
-	default:
-		return fmt.Sprintf("%d B", b)
-	}
-}
-
-// ── Goroutine del reporte ─────────────────────────────────────────────────────
-
-// reporte lanza un goroutine que cada 5 segundos llama a obtenerMetricas
-// (la cual internamente usa 3 goroutines paralelas) y actualiza los labels.
-// Se detiene limpiamente al cerrarse el canal stop.
-func reporte(lblCPU, lblRAM, lblRed *canvas.Text, stop <-chan struct{}) {
-	obtenerMetricas() // primera lectura para inicializar deltas de CPU
-
-	ticker := time.NewTicker(5 * time.Second)
-	go func() {
+		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-stop:
 				return
 			case <-ticker.C:
-				m := obtenerMetricas()
+				cpu                   := leerCPU()
+				ramUsado, ramDisp     := leerRAM()
+				discoUsado, discoTotal := leerDisco()
 
 				lblCPU.Text = fmt.Sprintf(
-					"CPU  %s  %5.1f%%",
-					barraTexto(m.CPUPorcentaje, 20),
-					m.CPUPorcentaje,
+					"CPU    %s  %.1f%%",
+					barra(cpu, 24), cpu,
 				)
 				lblCPU.Refresh()
 
 				lblRAM.Text = fmt.Sprintf(
-					"RAM  %s  %5.1f%%   (%s / %s)",
-					barraTexto(m.RAMPorcentaje, 20),
-					m.RAMPorcentaje,
-					fmt.Sprintf("%.0f MB", m.RAMUsadaMB),
-					fmt.Sprintf("%.0f MB", m.RAMTotalMB),
+					"RAM    usada: %6.0f MB   disponible: %6.0f MB",
+					ramUsado, ramDisp,
 				)
 				lblRAM.Refresh()
 
-				lblRed.Text = fmt.Sprintf(
-					"NET  ↓ %-12s   ↑ %-12s",
-					formatBytes(m.NetRxBytes),
-					formatBytes(m.NetTxBytes),
+				lblDisco.Text = fmt.Sprintf(
+					"DISCO  usada: %5.1f GB   total:      %5.1f GB   libre: %.1f GB",
+					discoUsado, discoTotal, discoTotal-discoUsado,
 				)
-				lblRed.Refresh()
+				lblDisco.Refresh()
 			}
 		}
 	}()
+}
+
+// barra genera una barra ASCII proporcional al porcentaje dado.
+func barra(pct float64, ancho int) string {
+	llenos := int(pct / 100.0 * float64(ancho))
+	if llenos > ancho {
+		llenos = ancho
+	}
+	return "[" + strings.Repeat("█", llenos) + strings.Repeat("░", ancho-llenos) + "]"
 }

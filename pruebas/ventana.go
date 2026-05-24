@@ -33,35 +33,30 @@ func mostrarVentanaPrincipal(a fyne.App) {
 	titBar.TextSize = 13
 
 	// ── Panel de métricas (reporte.go) ────────────────────────────────────
-	tituloMetricas := canvas.NewText("◈  MONITOR DEL SISTEMA", colAccent)
+	tituloMetricas := canvas.NewText("◈  MONITOR DEL SISTEMA  —  actualiza cada 5 s", colAccent)
 	tituloMetricas.TextStyle = fyne.TextStyle{Bold: true, Monospace: true}
 	tituloMetricas.TextSize = 11
 
-	lblCPU := canvas.NewText("CPU  [ cargando...               ]   --.--%", colGreen)
+	lblCPU := canvas.NewText("CPU    [ cargando...                    ]  --.-%", colGreen)
 	lblCPU.TextStyle = fyne.TextStyle{Monospace: true}
 	lblCPU.TextSize = 12
 
-	lblRAM := canvas.NewText("RAM  [ cargando...               ]   --.--%   (-- MB / -- MB)", colGreen)
+	lblRAM := canvas.NewText("RAM    usada:   ---- MB   disponible:   ---- MB", colGreen)
 	lblRAM.TextStyle = fyne.TextStyle{Monospace: true}
 	lblRAM.TextSize = 12
 
-	lblRed := canvas.NewText("NET  ↓ --           ↑ --", colGreen)
-	lblRed.TextStyle = fyne.TextStyle{Monospace: true}
-	lblRed.TextSize = 12
-
-	lblTick := canvas.NewText("actualización cada 5 s", colMuted)
-	lblTick.TextStyle = fyne.TextStyle{Monospace: true}
-	lblTick.TextSize = 10
+	lblDisco := canvas.NewText("DISCO  usada:  --.-- GB   total:       --.-- GB   libre: --.-- GB", colGreen)
+	lblDisco.TextStyle = fyne.TextStyle{Monospace: true}
+	lblDisco.TextSize = 12
 
 	panelMetricas := container.NewVBox(
 		container.NewPadded(tituloMetricas),
 		container.NewPadded(lblCPU),
 		container.NewPadded(lblRAM),
-		container.NewPadded(lblRed),
-		container.NewPadded(lblTick),
+		container.NewPadded(lblDisco),
 	)
 
-	reporte(lblCPU, lblRAM, lblRed, stopReporte)
+	reporte(lblCPU, lblRAM, lblDisco, stopReporte)
 
 	// ── Historial ─────────────────────────────────────────────────────────
 	historial := widget.NewLabel("")
