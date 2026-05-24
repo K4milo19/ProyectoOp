@@ -4,12 +4,14 @@ package main
 // Cliente TCP de ShellOS.
 // Ventana dividida en dos zonas:
 //   - Izquierda: terminal remota (comandos al servidor)
-//   - Derecha:   panel de métricas DEL SERVIDOR (CPU, RAM, Disco remotos)
+//   - Derecha:   panel de métricas DEL SERVIDOR (push cada 5 s)
 //
-// Las métricas llegan como mensajes push del servidor con el prefijo:
-//   <<<METRICS:CPU=12.3|RAM_USED=1024|RAM_FREE=2048|DISK_USED=40.1|DISK_TOTAL=100.0>>>
-// Estas líneas se filtran del flujo de respuesta a comandos y se aplican
-// directamente al panel derecho mediante parsearMetrics().
+// Arquitectura de lectura:
+//   Un único goroutine (lectorSocket) lee todas las líneas del socket.
+//   Clasifica cada línea:
+//     · <<<METRICS:...>>>  → canal metricas (no bloqueante)
+//     · cualquier otra    → canal respuestas (leído por enviarComando)
+//   Así no hay race condition entre lecturas concurrentes.
 
 import (
 	"bufio"
@@ -28,12 +30,14 @@ import (
 // ── Conexión al servidor ──────────────────────────────────────────────────────
 
 type ConexionServidor struct {
-	conn    net.Conn
-	scanner *bufio.Scanner
-
-	// onMetrics es llamado cada vez que llega un mensaje <<<METRICS:...>>>
-	// Se asigna desde mostrarTerminalCliente tras crear la conexión.
-	onMetrics func(cpu, ramUsed, ramFree, diskUsed, diskTotal float64)
+	conn      net.Conn
+	// respuestas recibe todas las líneas del socket que NO son métricas.
+	// enviarComando lee de este canal.
+	respuestas chan string
+	// metricas recibe las líneas <<<METRICS:...>>> del servidor.
+	metricas   chan string
+	// onMetrics se asigna desde mostrarTerminalCliente para actualizar la UI.
+	onMetrics  func(cpu, ramUsed, ramFree, diskUsed, diskTotal float64)
 }
 
 func conectarServidor(host string) (*ConexionServidor, error) {
@@ -42,20 +46,65 @@ func conectarServidor(host string) (*ConexionServidor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("no se pudo conectar a %s: %w", addr, err)
 	}
-	return &ConexionServidor{
-		conn:    conn,
-		scanner: bufio.NewScanner(conn),
-	}, nil
+	cs := &ConexionServidor{
+		conn:       conn,
+		respuestas: make(chan string, 256),
+		metricas:   make(chan string, 16),
+	}
+	go cs.lectorSocket()
+	return cs, nil
 }
 
-// parsearMetrics extrae los campos de una línea <<<METRICS:...>>>.
-// Devuelve false si la línea no tiene el formato correcto.
+// lectorSocket es el ÚNICO goroutine que lee del socket.
+// Clasifica cada línea y la envía al canal correspondiente.
+// Se detiene cuando la conexión se cierra.
+func (c *ConexionServidor) lectorSocket() {
+	scanner := bufio.NewScanner(c.conn)
+	for scanner.Scan() {
+		linea := scanner.Text()
+		if strings.HasPrefix(linea, "<<<METRICS:") {
+			// Envío no bloqueante: si nadie lee métricas, se descarta
+			select {
+			case c.metricas <- linea:
+			default:
+			}
+		} else {
+			c.respuestas <- linea
+		}
+	}
+	// Conexión cerrada: cerrar canales para que enviarComando no quede colgado
+	close(c.respuestas)
+	close(c.metricas)
+}
+
+// despachadorMetricas lee el canal de métricas y llama a onMetrics.
+// Se lanza como goroutine separada desde mostrarTerminalCliente.
+func (c *ConexionServidor) despachadorMetricas(stop <-chan struct{}) {
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case linea, ok := <-c.metricas:
+				if !ok {
+					return // canal cerrado (conexión caída)
+				}
+				if c.onMetrics != nil {
+					if cpu, ru, rf, du, dt, ok2 := parsearMetrics(linea); ok2 {
+						c.onMetrics(cpu, ru, rf, du, dt)
+					}
+				}
+			}
+		}
+	}()
+}
+
+// parsearMetrics extrae los 5 valores de una línea <<<METRICS:...>>>.
 func parsearMetrics(linea string) (cpu, ramUsed, ramFree, diskUsed, diskTotal float64, ok bool) {
 	if !strings.HasPrefix(linea, "<<<METRICS:") || !strings.HasSuffix(linea, ">>>") {
 		return
 	}
 	inner := strings.TrimSuffix(strings.TrimPrefix(linea, "<<<METRICS:"), ">>>")
-	// inner = "CPU=12.3|RAM_USED=1024|RAM_FREE=2048|DISK_USED=40.1|DISK_TOTAL=100.0"
 	campos := strings.Split(inner, "|")
 	vals := make(map[string]float64, len(campos))
 	for _, c := range campos {
@@ -79,8 +128,7 @@ func parsearMetrics(linea string) (cpu, ramUsed, ramFree, diskUsed, diskTotal fl
 }
 
 // enviarComando manda un comando al servidor y recoge (salida, pwd, error).
-// Las líneas <<<METRICS:...>>> que lleguen mientras se espera la respuesta
-// se desvían a onMetrics en lugar de mezclarse con la salida del comando.
+// Lee exclusivamente del canal c.respuestas (lectorSocket ya separó las métricas).
 func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err error) {
 	_, err = fmt.Fprintf(c.conn, "%s\n", cmd)
 	if err != nil {
@@ -88,19 +136,7 @@ func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err er
 	}
 
 	var sb strings.Builder
-	for c.scanner.Scan() {
-		linea := c.scanner.Text()
-
-		// Intercept de métricas push del servidor
-		if strings.HasPrefix(linea, "<<<METRICS:") {
-			if c.onMetrics != nil {
-				if cpu, ru, rf, du, dt, ok := parsearMetrics(linea); ok {
-					c.onMetrics(cpu, ru, rf, du, dt)
-				}
-			}
-			continue
-		}
-
+	for linea := range c.respuestas {
 		if linea == "<<<END>>>" {
 			break
 		}
@@ -111,9 +147,6 @@ func (c *ConexionServidor) enviarComando(cmd string) (salida, pwd string, err er
 		sb.WriteString(linea)
 		sb.WriteByte('\n')
 	}
-	if err = c.scanner.Err(); err != nil {
-		return sb.String(), pwd, fmt.Errorf("error al leer respuesta: %w", err)
-	}
 	return strings.TrimRight(sb.String(), "\n"), pwd, nil
 }
 
@@ -121,51 +154,6 @@ func (c *ConexionServidor) cerrar() {
 	if c.conn != nil {
 		c.conn.Close()
 	}
-}
-
-// ── Lectura asíncrona de métricas push ───────────────────────────────────────
-
-// escucharMetricasPush lee el socket en background esperando mensajes
-// <<<METRICS:...>>> que el servidor envía de forma proactiva (fuera del
-// ciclo request/response de comandos). Se lanza como goroutine.
-//
-// Nota: cuando el cliente está esperando la respuesta de un comando,
-// enviarComando() consume el stream —incluyendo los METRICS— directamente,
-// por lo que esta goroutine solo procesa los que llegan en "silencio"
-// (sin un comando pendiente). Para eso usamos un bufio.Scanner independiente
-// sobre la misma conexión: el scanner interno de ConexionServidor sólo se usa
-// dentro de enviarComando, por lo que no hay condición de carrera siempre que
-// el cliente no envíe dos comandos a la vez (lo cual es correcto aquí).
-//
-// Implementación simplificada: reutilizamos el mismo scanner de la conexión.
-// El scanner de enviarComando ya filtra los METRICS en tiempo real; esta
-// goroutine maneja los que llegan ENTRE comandos (idle period).
-func (c *ConexionServidor) escucharMetricasPush(stop <-chan struct{}) {
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-
-			if !c.scanner.Scan() {
-				return // conexión cerrada
-			}
-			linea := c.scanner.Text()
-
-			if strings.HasPrefix(linea, "<<<METRICS:") {
-				if c.onMetrics != nil {
-					if cpu, ru, rf, du, dt, ok := parsearMetrics(linea); ok {
-						c.onMetrics(cpu, ru, rf, du, dt)
-					}
-				}
-				continue
-			}
-
-			// Cualquier otra línea inesperada fuera de un comando: ignorar.
-		}
-	}()
 }
 
 // ── Ventana de conexión ───────────────────────────────────────────────────────
@@ -253,10 +241,10 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	w.Resize(fyne.NewSize(1280, 700))
 	w.CenterOnScreen()
 
-	stopPush := make(chan struct{})
+	stopMetrics := make(chan struct{})
 	w.SetOnClosed(func() {
 		cs.cerrar()
-		close(stopPush)
+		close(stopMetrics)
 	})
 
 	// ── Barra de título ───────────────────────────────────────────────────
@@ -285,11 +273,11 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	lblCPU.TextStyle = fyne.TextStyle{Monospace: true}
 	lblCPU.Wrapping = fyne.TextWrapWord
 
-	lblRAM := widget.NewLabel("RAM\nusada: -- MB\nlibre: -- MB")
+	lblRAM := widget.NewLabel("RAM\nusada: -- MB  |  libre: -- MB")
 	lblRAM.TextStyle = fyne.TextStyle{Monospace: true}
 	lblRAM.Wrapping = fyne.TextWrapWord
 
-	lblDisco := widget.NewLabel("DISCO\nusado: -- GB\ntotal: -- GB\nlibre: -- GB")
+	lblDisco := widget.NewLabel("DISCO\nusado: -- GB  |  total: -- GB  |  libre: -- GB")
 	lblDisco.TextStyle = fyne.TextStyle{Monospace: true}
 	lblDisco.Wrapping = fyne.TextWrapWord
 
@@ -309,13 +297,12 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 		container.NewPadded(lblTick),
 	)
 
-	// ── Callback de métricas: actualiza el panel derecho en el hilo UI ────
+	// Callback que actualiza el panel derecho desde cualquier goroutine
 	cs.onMetrics = func(cpu, ramUsed, ramFree, diskUsed, diskTotal float64) {
 		fyne.Do(func() {
 			lblCPU.SetText(fmt.Sprintf("CPU: %.1f%%", cpu))
 			lblRAM.SetText(fmt.Sprintf(
-				"RAM — usada: %.0f MB  |  libre: %.0f MB",
-				ramUsed, ramFree,
+				"RAM — usada: %.0f MB  |  libre: %.0f MB", ramUsed, ramFree,
 			))
 			lblDisco.SetText(fmt.Sprintf(
 				"DISCO — usado: %.1f GB  |  total: %.1f GB  |  libre: %.1f GB",
@@ -324,8 +311,8 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 		})
 	}
 
-	// Arrancar escucha de métricas push (mensajes entre comandos)
-	cs.escucharMetricasPush(stopPush)
+	// Arrancar despachador de métricas (lee canal, llama onMetrics)
+	cs.despachadorMetricas(stopMetrics)
 
 	// ── Historial ─────────────────────────────────────────────────────────
 	historial := widget.NewLabel("")
@@ -351,49 +338,63 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 	// ── Entrada de comandos ───────────────────────────────────────────────
 	promptLbl := labelMuted("~  »")
 
-	if _, pwd, err := cs.enviarComando("pwd"); err == nil && pwd != "" {
-		promptLbl.SetText(pwd + "  »")
-	}
+	// pwd inicial: se ejecuta en goroutine para no bloquear el hilo de UI
+	go func() {
+		if _, pwd, err := cs.enviarComando("pwd"); err == nil && pwd != "" {
+			fyne.Do(func() { promptLbl.SetText(pwd + "  »") })
+		}
+	}()
 
 	entrada := widget.NewEntry()
 	entrada.SetPlaceHolder("comando remoto…")
 	entrada.TextStyle = fyne.TextStyle{Monospace: true}
 
+	// cmdMu evita enviar dos comandos simultáneos (la UI es secuencial,
+	// pero el botón podría pulsarse dos veces rápido)
+	var cmdEnCurso bool
+
 	procesar := func() {
+		if cmdEnCurso {
+			return
+		}
 		texto := strings.TrimSpace(entrada.Text)
 		entrada.SetText("")
 		if texto == "" {
 			return
 		}
 
+		cmdEnCurso = true
 		agregar(fmt.Sprintf("  %s  » %s", promptLbl.Text, texto))
 
-		salida, pwd, err := cs.enviarComando(texto)
-		if err != nil {
-			agregar("  ✗ error de red: " + err.Error())
-			estadoLbl.Text = "● DESCONECTADO"
-			estadoLbl.Color = colError
-			estadoLbl.Refresh()
-			entrada.Disable()
-			agregar("")
-			return
-		}
-
-		if pwd != "" {
-			promptLbl.SetText(pwd + "  »")
-		}
-
-		for _, l := range strings.Split(salida, "\n") {
-			agregar("  " + l)
-		}
-		agregar("")
-
-		if texto == "bye" || texto == "exit" {
-			estadoLbl.Text = "● DESCONECTADO"
-			estadoLbl.Color = colError
-			estadoLbl.Refresh()
-			entrada.Disable()
-		}
+		// Ejecutar en goroutine para no congelar la UI mientras espera respuesta
+		go func() {
+			salida, pwd, err := cs.enviarComando(texto)
+			fyne.Do(func() {
+				cmdEnCurso = false
+				if err != nil {
+					agregar("  ✗ error de red: " + err.Error())
+					estadoLbl.Text = "● DESCONECTADO"
+					estadoLbl.Color = colError
+					estadoLbl.Refresh()
+					entrada.Disable()
+					agregar("")
+					return
+				}
+				if pwd != "" {
+					promptLbl.SetText(pwd + "  »")
+				}
+				for _, l := range strings.Split(salida, "\n") {
+					agregar("  " + l)
+				}
+				agregar("")
+				if texto == "bye" || texto == "exit" {
+					estadoLbl.Text = "● DESCONECTADO"
+					estadoLbl.Color = colError
+					estadoLbl.Refresh()
+					entrada.Disable()
+				}
+			})
+		}()
 	}
 
 	entrada.OnSubmitted = func(_ string) { procesar() }
@@ -403,7 +404,7 @@ func mostrarTerminalCliente(a fyne.App, cs *ConexionServidor, host string) {
 
 	barCmd := container.NewBorder(nil, nil, promptLbl, btnEjec, entrada)
 
-	// ── Layout: terminal izquierda | panel métricas derecha ───────────────
+	// ── Layout ────────────────────────────────────────────────────────────
 	terminal := container.NewBorder(
 		nil,
 		container.NewVBox(hRule(), container.NewPadded(barCmd)),
