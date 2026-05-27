@@ -1,8 +1,11 @@
-package main
+package auth
 
-// auth.go
-// Lógica de autenticación: lee contraseña.txt y compara el hash SHA-256.
-// No depende de ningún paquete de GUI.
+// credenciales.go
+// Lee el archivo contraseña.txt y valida usuario + contraseña
+// comparando el hash SHA-256 del texto plano con el hash almacenado.
+//
+// Formato esperado del archivo (una entrada por línea):
+//   admin:5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
 
 import (
 	"bufio"
@@ -12,13 +15,9 @@ import (
 	"strings"
 )
 
-// validarCredenciales abre "contraseña.txt", busca la línea "usuario:hashSHA256"
+// ValidarCredenciales abre "contraseña.txt", busca la línea "usuario:hashSHA256"
 // que coincida con las credenciales recibidas y devuelve true si las encuentra.
-//
-// Formato esperado del archivo (una entrada por línea):
-//
-//	admin:5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8
-func validarCredenciales(usuario, contrasena string) (bool, error) {
+func ValidarCredenciales(usuario, contrasena string) (bool, error) {
 	archivo, err := os.Open("contraseña.txt")
 	if err != nil {
 		return false, fmt.Errorf("no se pudo abrir el archivo: %w", err)

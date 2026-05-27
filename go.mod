@@ -1,4 +1,4 @@
-module main.go
+module shellos
 
 go 1.25.0
 

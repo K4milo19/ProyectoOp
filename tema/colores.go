@@ -1,0 +1,20 @@
+package tema
+
+// colores.go
+// Paleta de colores global de ShellOS.
+// Todos los colores son NRGBA con opacidad completa (A=0xff).
+
+import "image/color"
+
+var (
+	ColBg       = color.NRGBA{R: 0x0e, G: 0x0e, B: 0x0e, A: 0xff}
+	ColSurface  = color.NRGBA{R: 0x1a, G: 0x1a, B: 0x1a, A: 0xff}
+	ColBorder   = color.NRGBA{R: 0x3a, G: 0x3a, B: 0x3a, A: 0xff}
+	ColAccent   = color.NRGBA{R: 0xd0, G: 0xd0, B: 0xd0, A: 0xff}
+	ColPrimary  = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	ColMuted    = color.NRGBA{R: 0x70, G: 0x70, B: 0x70, A: 0xff}
+	ColHover    = color.NRGBA{R: 0x2e, G: 0x2e, B: 0x2e, A: 0xff}
+	ColDisabled = color.NRGBA{R: 0x44, G: 0x44, B: 0x44, A: 0xff}
+	ColError    = color.NRGBA{R: 0xc0, G: 0x50, B: 0x50, A: 0xff}
+	ColGreen    = color.NRGBA{R: 0x50, G: 0xc0, B: 0x70, A: 0xff}
+)
