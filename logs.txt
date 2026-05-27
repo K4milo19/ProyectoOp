@@ -1,0 +1,80 @@
+[2026-05-26 19:44:08] CLIENTE=192.168.1.4:56910
+  CMD : pwd
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:44:14] CLIENTE=192.168.1.4:56910
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:44:15] CLIENTE=192.168.1.4:56910
+  CMD : cd
+  OUT : ✗ cd: HOME no definido.
+────────────────────────────────────────────────────────────
+[2026-05-26 19:44:16] CLIENTE=192.168.1.4:56910
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:44:16] CLIENTE=192.168.1.4:56910
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:29] CLIENTE=192.168.1.4:60872
+  CMD : pwd
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:33] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:33] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:34] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:35] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:36] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:36] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:37] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:38] CLIENTE=192.168.1.4:60872
+  CMD : ls
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:39] CLIENTE=192.168.1.4:60872
+  CMD : cd
+  OUT : ✗ cd: HOME no definido.
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:40] CLIENTE=192.168.1.4:60872
+  CMD : cd
+  OUT : ✗ cd: HOME no definido.
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:40] CLIENTE=192.168.1.4:60872
+  CMD : cd
+  OUT : ✗ cd: HOME no definido.
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:41] CLIENTE=192.168.1.4:60872
+  CMD : cd
+  OUT : ✗ cd: HOME no definido.
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:41] CLIENTE=192.168.1.4:60872
+  CMD : cd
+  OUT : ✗ cd: HOME no definido.
+────────────────────────────────────────────────────────────
+[2026-05-26 19:45:43] CLIENTE=192.168.1.4:60872
+  CMD : sd
+  OUT : ✗ error: exec: "bash": executable file not found in %PATH%
+────────────────────────────────────────────────────────────

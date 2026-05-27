@@ -1,9 +1,5 @@
 package tema
 
-// colores.go
-// Paleta de colores global de ShellOS.
-// Todos los colores son NRGBA con opacidad completa (A=0xff).
-
 import "image/color"
 
 var (

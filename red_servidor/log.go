@@ -1,9 +1,5 @@
 package red_servidor
 
-// log.go
-// Escritura thread-safe al archivo logs.txt.
-// La ruta absoluta se fija al iniciar el servidor, antes de cualquier cd.
-
 import (
 	"fmt"
 	"os"
@@ -18,27 +14,30 @@ const ArchivoLog = "logs.txt"
 var (
 	logMu      sync.Mutex
 	rutaLogAbs string
+	initOnce   sync.Once
 )
 
-// InitLog captura el directorio de trabajo actual como raíz permanente del log.
-// Debe llamarse al arrancar el servidor, antes de aceptar cualquier cliente.
-func InitLog() {
-	wd, err := os.Getwd()
-	if err != nil {
-		rutaLogAbs = ArchivoLog
-		return
-	}
-	rutaLogAbs = filepath.Join(wd, ArchivoLog)
+func resolverRuta() {
+	initOnce.Do(func() {
+		wd, err := os.Getwd()
+		if err != nil {
+			rutaLogAbs = ArchivoLog
+			return
+		}
+		rutaLogAbs = filepath.Join(wd, ArchivoLog)
+		fmt.Println("DEBUG log: ruta fijada en:", rutaLogAbs)
+	})
 }
 
-// EscribirLog añade una entrada al archivo logs.txt.
-// Es seguro llamarlo desde múltiples goroutines.
 func EscribirLog(cliente, comando, salida string) {
+	resolverRuta()
+
 	logMu.Lock()
 	defer logMu.Unlock()
 
 	f, err := os.OpenFile(rutaLogAbs, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
+		fmt.Println("ERROR abriendo log:", err)
 		return
 	}
 	defer f.Close()
@@ -50,5 +49,8 @@ func EscribirLog(cliente, comando, salida string) {
 		strings.ReplaceAll(strings.TrimSpace(salida), "\n", "\n       "),
 		strings.Repeat("─", 60),
 	)
-	f.WriteString(entrada)
+	_, err = f.WriteString(entrada)
+	if err != nil {
+		fmt.Println("ERROR escribiendo log:", err)
+	}
 }

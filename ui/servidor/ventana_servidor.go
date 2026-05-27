@@ -1,9 +1,5 @@
 package servidor
 
-// ventana_servidor.go
-// Panel de control del nodo servidor: muestra IPs locales,
-// información del sistema y un log en vivo de conexiones/comandos.
-
 import (
 	"fmt"
 	"strings"
@@ -17,7 +13,6 @@ import (
 	"shellos/tema"
 )
 
-// MostrarVentanaServidor abre el panel del servidor.
 func MostrarVentanaServidor(a fyne.App) {
 	w := a.NewWindow("ShellOS — Servidor")
 	w.Resize(fyne.NewSize(860, 620))
@@ -74,13 +69,18 @@ func MostrarVentanaServidor(a fyne.App) {
 
 	var lineas []string
 	logCh := make(chan string, 64)
+
 	go func() {
 		for msg := range logCh {
-			lineas = append(lineas, "  "+msg)
-			logLabel.SetText(strings.Join(lineas, "\n"))
-			scroll.ScrollToBottom()
+			m := msg
+			fyne.Do(func() {
+				lineas = append(lineas, "  "+m)
+				logLabel.SetText(strings.Join(lineas, "\n"))
+				scroll.ScrollToBottom()
+			})
 		}
 	}()
+
 	onLog := func(msg string) { logCh <- msg }
 
 	onLog("═══════════════════════════════════════════════════════════")
