@@ -2,8 +2,7 @@ package red_servidor
 
 // log.go
 // Escritura thread-safe al archivo logs.txt.
-// La ruta absoluta se fija al iniciar el programa para que los cd
-// del cliente no afecten dónde se guarda el archivo.
+// La ruta absoluta se fija al iniciar el servidor, antes de cualquier cd.
 
 import (
 	"fmt"
@@ -18,20 +17,18 @@ const ArchivoLog = "logs.txt"
 
 var (
 	logMu      sync.Mutex
-	rutaLogAbs string // ruta absoluta, se inicializa una sola vez
+	rutaLogAbs string
 )
 
-// InitLog debe llamarse al arrancar el servidor, antes de aceptar clientes.
-// Fija la ruta absoluta de logs.txt relativa al ejecutable.
+// InitLog captura el directorio de trabajo actual como raíz permanente del log.
+// Debe llamarse al arrancar el servidor, antes de aceptar cualquier cliente.
 func InitLog() {
-	exe, err := os.Executable()
+	wd, err := os.Getwd()
 	if err != nil {
-		// fallback: directorio de trabajo al momento de arrancar
-		wd, _ := os.Getwd()
-		rutaLogAbs = filepath.Join(wd, ArchivoLog)
+		rutaLogAbs = ArchivoLog
 		return
 	}
-	rutaLogAbs = filepath.Join(filepath.Dir(exe), ArchivoLog)
+	rutaLogAbs = filepath.Join(wd, ArchivoLog)
 }
 
 // EscribirLog añade una entrada al archivo logs.txt.
