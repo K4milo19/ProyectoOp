@@ -25,7 +25,7 @@ func resolverRuta() {
 			return
 		}
 		rutaLogAbs = filepath.Join(wd, ArchivoLog)
-		fmt.Println("DEBUG log: ruta fijada en:", rutaLogAbs)
+		fmt.Println("DEBUG: ruta fijada en:", rutaLogAbs)
 	})
 }
 

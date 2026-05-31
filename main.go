@@ -18,15 +18,15 @@ import (
 func main() {
 	a := app.New()
 	a.Settings().SetTheme(&tema.ShellTheme{})
-
 	selector.MostrarSeleccionModo(a, func(modo selector.ModoApp) {
-		login.MostrarLogin(a, modo, func() {
 			switch modo {
 			case selector.ModoServidor:
 				servidor.MostrarVentanaServidor(a)
 			case selector.ModoCliente:
+				login.MostrarLogin(a, modo, func() {
 				terminal_cliente.MostrarVentanaConexion(a)
+				})
 			}
-		})
+		
 	})
 }
