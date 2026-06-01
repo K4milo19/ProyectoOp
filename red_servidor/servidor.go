@@ -42,7 +42,7 @@ func IniciarServidor(onLog func(string), stop <-chan struct{}) error {
 			}
 			if !IPEstaPermitida(conn.RemoteAddr().String()) {
 				onLog(fmt.Sprintf("[ BLOQUEADO ]  %s no está en la lista de IPs permitidas", conn.RemoteAddr().String()))
-				conn.Close()
+				RechazarCliente(conn)
 				continue
 			}
 			go ManejarCliente(conn, onLog)

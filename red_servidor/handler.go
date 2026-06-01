@@ -1,15 +1,5 @@
 package red_servidor
 
-// handler.go
-// Atiende una conexión TCP individual.
-// Lee comandos línea a línea, los ejecuta y devuelve la salida
-// junto con el directorio de trabajo actual (pwd).
-//
-// Protocolo de respuesta por comando:
-//   <<<PWD:/ruta/actual>>>
-//   <líneas de salida>
-//   <<<END>>>
-
 import (
 	"bufio"
 	"fmt"
@@ -20,7 +10,6 @@ import (
 	"shellos/shell"
 )
 
-// ManejarCliente atiende una conexión individual en su propio goroutine.
 func ManejarCliente(conn net.Conn, onLog func(string)) {
 	defer func() {
 		eliminarCliente(conn)
@@ -61,4 +50,10 @@ func ManejarCliente(conn net.Conn, onLog func(string)) {
 	} else {
 		onLog(fmt.Sprintf("[ DESCONEXIÓN ]  %s", remoto))
 	}
+}
+
+// RechazarCliente envía un aviso al cliente y cierra la conexión.
+func RechazarCliente(conn net.Conn) {
+	fmt.Fprintf(conn, "<<<BLOQUEADO:Tu IP no tiene permiso para conectarse a este servidor>>>\n")
+	conn.Close()
 }

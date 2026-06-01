@@ -1,8 +1,5 @@
 package terminal_cliente
 
-// ventana_conexion.go
-// Ventana donde el usuario escribe la IP del servidor antes de conectar.
-
 import (
 	"strings"
 
@@ -15,7 +12,6 @@ import (
 	"shellos/tema"
 )
 
-// MostrarVentanaConexion muestra el formulario de IP del servidor.
 func MostrarVentanaConexion(a fyne.App) {
 	w := a.NewWindow("ShellOS — Conectar al servidor")
 	w.Resize(fyne.NewSize(420, 320))
@@ -66,6 +62,17 @@ func MostrarVentanaConexion(a fyne.App) {
 			msgErr.Refresh()
 			return
 		}
+
+		// Asignar callback de bloqueo antes de abrir el terminal
+		cs.OnBloqueado = func(motivo string) {
+			fyne.Do(func() {
+				msgErr.Text = "⛔  " + motivo
+				msgErr.Color = tema.ColError
+				msgErr.Refresh()
+				w.Show()
+			})
+		}
+
 		w.Hide()
 		MostrarTerminalCliente(a, cs, host)
 	}
