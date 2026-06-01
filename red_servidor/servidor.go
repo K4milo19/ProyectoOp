@@ -1,21 +1,17 @@
 package red_servidor
 
-// servidor.go
-// Abre el listener TCP, acepta clientes y orquesta el broadcaster.
-// IniciarServidor es el único punto de entrada público de este paquete
-// para levantar el servidor completo.
-
 import (
 	"fmt"
 	"net"
 )
 
-const PuertoServidor = ":9000"
+var PuertoServidor string
 
-// IniciarServidor abre el socket TCP en PuertoServidor y acepta clientes.
-// También arranca el broadcaster de métricas.
-// El canal stop detiene tanto el listener como el broadcaster.
 func IniciarServidor(onLog func(string), stop <-chan struct{}) error {
+	CargarConfig()
+
+	PuertoServidor = GetPuerto()
+
 	ln, err := net.Listen("tcp", PuertoServidor)
 	if err != nil {
 		return fmt.Errorf("no se pudo iniciar el servidor en %s: %w", PuertoServidor, err)
@@ -27,13 +23,11 @@ func IniciarServidor(onLog func(string), stop <-chan struct{}) error {
 
 	IniciarBroadcasterMetricas(stop)
 
-	// Cierre limpio del listener al señalizar stop
 	go func() {
 		<-stop
 		ln.Close()
 	}()
 
-	// Bucle de aceptación
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -46,6 +40,11 @@ func IniciarServidor(onLog func(string), stop <-chan struct{}) error {
 					continue
 				}
 			}
+			if !IPEstaPermitida(conn.RemoteAddr().String()) {
+				onLog(fmt.Sprintf("[ BLOQUEADO ]  %s no está en la lista de IPs permitidas", conn.RemoteAddr().String()))
+				conn.Close()
+				continue
+			}
 			go ManejarCliente(conn, onLog)
 		}
 	}()
@@ -53,7 +52,6 @@ func IniciarServidor(onLog func(string), stop <-chan struct{}) error {
 	return nil
 }
 
-// ObtenerIPs devuelve todas las IPs IPv4 locales (excluye loopback).
 func ObtenerIPs() []string {
 	var ips []string
 	ifaces, err := net.Interfaces()

@@ -1,0 +1,10 @@
+# config.txt — Configuración del servidor ShellOS
+# Líneas que empiezan con # son comentarios
+
+# Puerto en el que escucha el servidor
+puerto=9000
+
+# IPs que tienen permiso de conectarse
+# Separar con comas, sin espacios entre ellas
+# Si se deja vacío se aceptan TODAS las conexiones
+ips_permitidas=
