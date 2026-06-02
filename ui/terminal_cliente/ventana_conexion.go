@@ -48,6 +48,7 @@ func MostrarVentanaConexion(a fyne.App) {
 		host := strings.TrimSpace(inpIP.Text)
 		if host == "" {
 			msgErr.Text = "✗  ingresa una IP o hostname"
+			msgErr.Color = tema.ColError
 			msgErr.Refresh()
 			return
 		}
@@ -63,18 +64,26 @@ func MostrarVentanaConexion(a fyne.App) {
 			return
 		}
 
-		// Asignar callback de bloqueo antes de abrir el terminal
-		cs.OnBloqueado = func(motivo string) {
-			fyne.Do(func() {
-				msgErr.Text = "⛔  " + motivo
-				msgErr.Color = tema.ColError
-				msgErr.Refresh()
-				w.Show()
-			})
-		}
-
-		w.Hide()
-		MostrarTerminalCliente(a, cs, host)
+		// Esperar en goroutine: el servidor acepta o bloquea
+		go func() {
+			select {
+			case motivo := <-cs.Bloqueado:
+				// Servidor rechazó la conexión
+				cs.Cerrar()
+				fyne.Do(func() {
+					msgErr.Text = "⛔  " + motivo
+					msgErr.Color = tema.ColError
+					msgErr.Refresh()
+					w.Show()
+				})
+			case <-cs.Aceptado:
+				// Servidor aceptó la conexión
+				fyne.Do(func() {
+					w.Hide()
+					MostrarTerminalCliente(a, cs, host)
+				})
+			}
+		}()
 	}
 
 	btnConectar.OnTapped = accion
